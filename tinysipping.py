@@ -6,7 +6,7 @@ from __future__ import unicode_literals
 Small script which can perform simple SIP OPTIONS ping and read response.
 Written in Python2.7-compatible style without any external dependencies
 for CentOS 7 compatibility. Also, it was quite minified for comfortable
-copypasting to REPL sacrificing some PEP-8 recommedations,
+copypasting to REPL sacrificing some PEP-8 recommedations.
 """
 
 import socket
@@ -21,7 +21,7 @@ PING_TIMEOUT = 10.0  # seconds
 MAX_RECVBUF_SIZE = 1400  # bytes
 
 
-def CreateSIPRequest(
+def create_sip_request(
         dst_host,
         dst_port=5060,
         src_port=0,
@@ -65,7 +65,7 @@ def CreateSIPRequest(
     ])
 
 
-def CreateSocket(proto="udp", src_host='', src_port=0, timeout=PING_TIMEOUT):
+def create_socket(proto="udp", src_host='', src_port=0, timeout=PING_TIMEOUT):
     """
     Function returns preconfigured socket for transport needs
     :param src_host: (str) source host or ip of interface (default "")
@@ -78,7 +78,7 @@ def CreateSocket(proto="udp", src_host='', src_port=0, timeout=PING_TIMEOUT):
     sock = socket.socket(socket.AF_INET, sock_type)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-    if src_host.startswith("127.") and not dst_host.startswith("127."):
+    if src_host.startswith("127."):  # checking for loopback ip.
         sock.bind(('', src_port))
     else:
         sock.bind((src_host, src_port))
@@ -86,8 +86,8 @@ def CreateSocket(proto="udp", src_host='', src_port=0, timeout=PING_TIMEOUT):
     return sock
 
 
-def UDPSend(dst_host, request, dst_port=5060, src_host='',
-            src_port=0, timeout=PING_TIMEOUT):
+def udp_send(dst_host, request, dst_port=5060, src_host='',
+             src_port=0, timeout=PING_TIMEOUT):
     """
     Function performs single sending of SIP packet
     :param dst_host: (str) ip address or hostname
@@ -99,7 +99,7 @@ def UDPSend(dst_host, request, dst_port=5060, src_host='',
     :returns: tuple(string, int, exc/None) - buffer, length and possible error
     """
     dst_ipaddr = socket.gethostbyname(dst_host)
-    sock = CreateSocket(
+    sock = create_socket(
         proto="udp",
         src_host=src_host,
         src_port=src_port,
@@ -120,12 +120,12 @@ def UDPSend(dst_host, request, dst_port=5060, src_host='',
         sock.close()
 
 
-def TCPSend(dst_host,
-            request,
-            dst_port=5060,
-            src_host='',
-            src_port=0,
-            timeout=PING_TIMEOUT):
+def tcp_send(dst_host,
+             request,
+             dst_port=5060,
+             src_host='',
+             src_port=0,
+             timeout=PING_TIMEOUT):
     """
         Function performs single sending of SIP packet
         :param dst_host: (str) ip address or hostname
@@ -136,7 +136,7 @@ def TCPSend(dst_host,
         :param timeout: (float) socket timeout in seconds
         :returns: tuple(string, int, exc/None) - buffer and length
         """
-    sock = CreateSocket(
+    sock = create_socket(
         proto="tcp",
         src_host=src_host,
         src_port=src_port,
@@ -153,7 +153,10 @@ def TCPSend(dst_host,
         sock.close()
 
 
-if __name__ == "__main__":
+def main():
+    """
+    void main( void )
+    """
     ap = argparse.ArgumentParser()
     mandatory_args = ap.add_argument_group('mandatory arguments')
     mandatory_args.add_argument(
@@ -194,7 +197,7 @@ if __name__ == "__main__":
         help="Verbose mode (show sent and received content)",
         action="store_true"
     )
-    ap.add_argument('-V', action='version', version='%(prog)s 2.0')
+    ap.add_argument('-V', action='version', version=VERSION)
 
     args = ap.parse_args()
     if ":" in args.dst_sock:
@@ -219,16 +222,16 @@ if __name__ == "__main__":
         src_host = ''
         src_port = 0
     if args.proto == 'tcp':
-        SIPPing = TCPSend
-        request = CreateSIPRequest(
+        send_function = tcp_send
+        request = create_sip_request(
             dst_host=dst_host,
             dst_port=dst_port,
             src_port=src_port,
             proto="tcp"
         )
     else:
-        SIPPing = UDPSend
-        request = CreateSIPRequest(
+        send_function = udp_send
+        request = create_sip_request(
             dst_host=dst_host,
             dst_port=dst_port,
             src_port=src_port,
@@ -241,7 +244,7 @@ if __name__ == "__main__":
         print("Full request:")
         print(request)
     start_time = time.time()
-    resp, length, error = SIPPing(
+    resp, length, error = send_function(
         dst_host=dst_host,
         request=request,
         dst_port=dst_port,
@@ -267,3 +270,7 @@ if __name__ == "__main__":
             print(resp)
         print("\n\n")
         exit(0)
+
+
+if __name__ == "__main__":
+    main()

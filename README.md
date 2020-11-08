@@ -1,9 +1,10 @@
 # tinysipping
-Tiny SIP Ping - tool for manual pinging SIP services by SIP OPTIONS requests.  
-Deliberately written in Python2.7-compatible style without any external dependecies
-for compatibility with basic Centos7.x installation.    
-  
-Also, some PEP-8 rules was sacrificed for comfortable copypasting to REPL.
+Tiny SIP Ping - Small script which can perform simple SIP OPTIONS ping and read 
+response.  
+Deliberately written in Python2.7-compatible style without any external 
+dependencies for CentOS 7 compatibility.  
+Also, it was quite minified for comfortable
+copypasting to REPL sacrificing some PEP-8 recommedations..    
 
 ```
 usage: tinysipping.py [-h] -d DST_SOCK [-p {tcp,udp}] [-t SOCK_TIMEOUT]
