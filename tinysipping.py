@@ -15,6 +15,7 @@ import random
 import argparse
 import time
 
+VERSION = "0.0.1"
 MAX_FORWARDS = 70  # times
 PING_TIMEOUT = 10.0  # seconds
 MAX_RECVBUF_SIZE = 1400  # bytes
@@ -154,7 +155,8 @@ def TCPSend(dst_host,
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument(
+    mandatory_args = ap.add_argument_group('mandatory arguments')
+    mandatory_args.add_argument(
         "-d",
         dest='dst_sock',
         help="Destination host <ip/hostname>[:port]",
@@ -167,13 +169,13 @@ if __name__ == "__main__":
         dest="proto",
         help="Protocol ('udp' or 'tcp')",
         type=str,
-        choices=['tcp', 'udp'],
+        choices=('tcp', 'udp'),
         default='udp'
     )
     ap.add_argument(
         "-t",
         dest="sock_timeout",
-        help="Socket timeout",
+        help="Socket timeout in seconds (float, default 10.0)",
         type=float,
         action="store",
         default=PING_TIMEOUT
@@ -181,16 +183,19 @@ if __name__ == "__main__":
     ap.add_argument(
         "-s",
         dest="src_sock",
-        help="Source iface <ip/hostname>[:port]",
+        help="Source iface [ip/hostname]:[port] (hostname part is optional, "
+             "possible to type \":PORT\" form to just set srcport)",
         type=str,
         action="store"
     )
     ap.add_argument(
-        "-d",
-        dest="debug_mode",
-        help="Debug mode (show sent and received content)",
+        "-v",
+        dest="verbose_mode",
+        help="Verbose mode (show sent and received content)",
         action="store_true"
     )
+    ap.add_argument('-V', action='version', version='%(prog)s 2.0')
+
     args = ap.parse_args()
     if ":" in args.dst_sock:
         dst_host, dst_port = args.dst_sock.split(":")
@@ -232,7 +237,7 @@ if __name__ == "__main__":
     print("Sending SIP OPTIONS from %s:%d to %s:%d with timeout %f ..." % (
         src_host, src_port, dst_host, dst_port, args.sock_timeout)
     )
-    if args.debug_mode:
+    if args.verbose_mode:
         print("Full request:")
         print(request)
     start_time = time.time()
@@ -257,7 +262,7 @@ if __name__ == "__main__":
             resp.split("\n")[0].strip()
             )
         )
-        if args.debug_mode:
+        if args.verbose_mode:
             print("Full response:")
             print(resp)
         print("\n\n")
