@@ -2,9 +2,11 @@
 # -*- coding: utf-8 -*-
 
 from __future__ import unicode_literals
+
 """
-Small script which can perform simple SIP OPTIONS ping and read response.
-Written in Python2.7-compatible style without any external dependencies
+tinysipping is a small tool that sends SIP OPTIONS requests to remote host and
+reads responses.
+Written in Python2.7-compatible style without external dependencies
 for CentOS 7 compatibility. Also, it was quite minified for comfortable
 copypasting to REPL sacrificing some PEP-8 recommedations.
 """
@@ -16,23 +18,28 @@ import argparse
 import time
 
 VERSION = "0.0.1"
+TOOL_DESCRIPTION = "tinysipping is small tool that sends SIP OPTIONS " \
+                   "requests to remote host and reads responses. "
+
 MAX_FORWARDS = 70  # times
 PING_TIMEOUT = 10.0  # seconds
 MAX_RECVBUF_SIZE = 1400  # bytes
+DFL_SIP_PORT = 5060
+
+# messages templates for further formatting
+MSG_SENDING_REQS = "Sending %d SIP OPTIONS request%s from %s:%d to " \
+                   "%s:%d with timeout %.03fs..."
+MSG_RESP_FROM = "Response from %s (%d bytes, %f sec RTT): %s"
 
 
-def create_sip_request(
-        dst_host,
-        dst_port=5060,
-        src_port=0,
-        proto="udp"):
+def create_sip_req(dst_host, dst_port=DFL_SIP_PORT, src_port=0, proto="udp"):
     """
     Generates serialized SIP header from source data
     :param src_port: (int) source port. Used in From: header
     :param dst_port: (int) destination port. Used in URI and To: header
     :param dst_host: (str) ip address or hostname of remote side.
     :param proto: (str) tcp or udp, otherwise ValueError will raise
-    :returns: (string): SIP header in human-readable format. Don't forget to
+    :returns: (string): SIP header in human-readable format. Don"t forget to
                         encode it to bytes
     """
     my_hostname = socket.gethostname()
@@ -58,18 +65,18 @@ def create_sip_request(
         "From: <sip:options@%s:%d>;tag=%d" % (my_hostname, src_port, tag_id),
         "Call-ID: %s" % call_id,
         "CSeq: %d OPTIONS" % cseq,
-        "Contact: <sip:sip:options@%s>" % my_hostname,
+        "Contact: <sip:options@%s>" % my_hostname,
         "Accept: application/sdp"
         "Content-Length: 0",
         "\r\n"  # for getting double \r\n at the end, as it need by RFC
     ])
 
 
-def create_socket(proto="udp", src_host='', src_port=0, timeout=PING_TIMEOUT):
+def create_socket(proto="udp", bind_addr="", bind_port=0, timeout=PING_TIMEOUT):
     """
     Function returns preconfigured socket for transport needs
-    :param src_host: (str) source host or ip of interface (default "")
-    :param src_port: (int) source port (default 0)
+    :param bind_addr: (str) source host or ip of interface (default "")
+    :param bind_port: (int) source port (default 0)
     :param proto: (str) transport protocol - "tcp" or "udp"
     :param timeout: (float) socket timeout
     :return: (socket.socket) socket prepared for transmission
@@ -78,39 +85,35 @@ def create_socket(proto="udp", src_host='', src_port=0, timeout=PING_TIMEOUT):
     sock = socket.socket(socket.AF_INET, sock_type)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-    if src_host.startswith("127."):  # checking for loopback ip.
-        sock.bind(('', src_port))
+    if bind_addr.startswith("127."):  # checking for loopback ip.
+        sock.bind(("", bind_port))
     else:
-        sock.bind((src_host, src_port))
+        sock.bind((bind_addr, bind_port))
     sock.settimeout(timeout)
     return sock
 
 
-def udp_send(dst_host, request, dst_port=5060, src_host='',
-             src_port=0, timeout=PING_TIMEOUT):
+def udp_send(request, params):
     """
     Function performs single sending of SIP packet
-    :param dst_host: (str) ip address or hostname
     :param request: (str) data to send
-    :param dst_port: (int) destination port
-    :param src_host: (str) source host or ip of interface
-    :param src_port: (int) source port
-    :param timeout: (float) socket timeout in seconds
+    :param params: params dict. See _get_params_from_cliargs() for
+    dictionary format
     :returns: tuple(string, int, exc/None) - buffer, length and possible error
     """
-    dst_ipaddr = socket.gethostbyname(dst_host)
+    dst_ipaddr = socket.gethostbyname(params["dst_host"])
     sock = create_socket(
         proto="udp",
-        src_host=src_host,
-        src_port=src_port,
-        timeout=timeout
+        bind_addr=params["src_host"],
+        bind_port=params["src_port"],
+        timeout=params["timeout"]
     )
     try:
-        sock.sendto(request.encode(), (dst_ipaddr, dst_port))
+        sock.sendto(request.encode(), (dst_ipaddr, params["dst_port"]))
         while True:
             data, addr = sock.recvfrom(MAX_RECVBUF_SIZE)
             remote_host, remote_port = addr
-            if remote_host == dst_ipaddr and remote_port == dst_port:
+            if remote_host == dst_ipaddr and remote_port == params["dst_port"]:
                 return data.decode(encoding="utf-8", errors="ignore"), \
                        len(data), \
                        None
@@ -120,30 +123,22 @@ def udp_send(dst_host, request, dst_port=5060, src_host='',
         sock.close()
 
 
-def tcp_send(dst_host,
-             request,
-             dst_port=5060,
-             src_host='',
-             src_port=0,
-             timeout=PING_TIMEOUT):
+def tcp_send(request, params):
     """
-        Function performs single sending of SIP packet
-        :param dst_host: (str) ip address or hostname
-        :param request: (str) data to send
-        :param dst_port: (int) destination port
-        :param src_host: (str) source host or ip of interface
-        :param src_port: (int) source port
-        :param timeout: (float) socket timeout in seconds
-        :returns: tuple(string, int, exc/None) - buffer and length
-        """
+    Function performs single sending of SIP packet
+    :param request: (str) data to send
+    :param params: params dict. See _get_params_from_cliargs() for
+    dictionary format
+    :returns: tuple(string, int, exc/None) - buffer and length
+    """
     sock = create_socket(
         proto="tcp",
-        src_host=src_host,
-        src_port=src_port,
-        timeout=timeout
+        bind_addr=params['src_host'],
+        bind_port=params['src_port'],
+        timeout=params['timeout']
     )
     try:
-        sock.connect((dst_host, dst_port))
+        sock.connect((params["dst_host"], params["dst_port"]))
         sock.sendall(request.encode())
         data = sock.recv(MAX_RECVBUF_SIZE)
         return data.decode(encoding="utf-8", errors="ignore"), len(data), None
@@ -153,27 +148,79 @@ def tcp_send(dst_host,
         sock.close()
 
 
-def main():
+def _get_params_from_cliargs(args):
     """
-    void main( void )
+    Function returns dictionary with params taken from cliargs.
+    Dictionary content:
+    {
+        "dst_host": (str) Destination host. Assertion for not empty
+        "dst_port": (int) Destination port.
+        "src_host": (str) Source interface ip
+        "src_port": (int) Source port
+        "count": (int) Count of requests that are to be sent
+        "timeout": (float) Socket timeout
+        "proto": Protocol (tcp or udp). Assertion for proto in (tcp, udp)
+        "verbose_mode": (bool) Verbose mode
+    }
+    :param args: (argparse.Namespace) argparse CLI arguments
+    :return: (dict) dictionary with params
     """
-    ap = argparse.ArgumentParser()
-    mandatory_args = ap.add_argument_group('mandatory arguments')
-    mandatory_args.add_argument(
-        "-d",
-        dest='dst_sock',
+    params = {
+        "dst_host": None,  # value is to be redefined below
+        "dst_port": DFL_SIP_PORT,  # value is to be redefined below
+        "src_host": "",
+        "src_port": 0,
+        "count": args.count,
+        "timeout": args.sock_timeout,
+        "proto": args.proto.lower(),  # let user set TCP or tcp
+        "verbose_mode": args.verbose_mode,
+    }
+    if ":" in args.destination:
+        params["dst_host"], dst_port = args.destination.split(":")
+        params["dst_port"] = int(dst_port)
+    else:
+        params["dst_host"] = args.destination
+    if args.src_sock:
+        if ":" in args.src_sock:
+            params["src_host"], src_port = args.src_sock.split(":")
+            params["src_port"] = int(src_port)
+        else:
+            params["src_host"] = args.src_sock
+    assert (params['proto'] in ('tcp', 'udp'))  # tcp and udp support only
+    assert (params['dst_host'])  # dst_host is mandatory parameter
+    return params
+
+
+def _prepare_argv_parser():
+    """
+    (for internal use) Returns ArgumentParser with configured options and \
+    help strings
+    :returns: (argparse.ArgumentParser) object with cli options
+    """
+    ap = argparse.ArgumentParser(
+        description=TOOL_DESCRIPTION,
+        formatter_class=lambda prog: argparse.HelpFormatter(prog, width=120)
+    )
+    ap.add_argument(
+        "destination",
         help="Destination host <ip/hostname>[:port]",
         type=str,
         action="store",
-        required=True
+    )
+    ap.add_argument(
+        "-c",
+        dest="count",
+        help="Count of requests (default 1)",
+        type=int,
+        default=1
     )
     ap.add_argument(
         "-p",
         dest="proto",
         help="Protocol ('udp' or 'tcp')",
         type=str,
-        choices=('tcp', 'udp'),
-        default='udp'
+        choices=("tcp", "udp"),
+        default="udp"
     )
     ap.add_argument(
         "-t",
@@ -197,79 +244,96 @@ def main():
         help="Verbose mode (show sent and received content)",
         action="store_true"
     )
-    ap.add_argument('-V', action='version', version=VERSION)
+    ap.add_argument("-V", action="version", version=VERSION)
+    return ap
 
-    args = ap.parse_args()
-    if ":" in args.dst_sock:
-        dst_host, dst_port = args.dst_sock.split(":")
-        dst_port = int(dst_port)
-        if not dst_host:
-            print("ERROR: Specify destination host!")
-            exit(1)
-    else:
-        dst_host = args.dst_sock
-        dst_port = 5060
-    if args.src_sock:
-        if ":" in args.src_sock:
-            src_host, src_port = args.src_sock.split(":")
-            src_port = int(src_port)
-            if not src_host:  # possible to set srcport only in ":33333" manner
-                src_host = ''
-        else:
-            src_host = args.src_sock
-            src_port = 0  # Source port 0 means dynamically allocatable one
-    else:
-        src_host = ''
-        src_port = 0
-    if args.proto == 'tcp':
-        send_function = tcp_send
-        request = create_sip_request(
-            dst_host=dst_host,
-            dst_port=dst_port,
-            src_port=src_port,
-            proto="tcp"
-        )
-    else:
-        send_function = udp_send
-        request = create_sip_request(
-            dst_host=dst_host,
-            dst_port=dst_port,
-            src_port=src_port,
-            proto="udp"
-        )
-    print("Sending SIP OPTIONS from %s:%d to %s:%d with timeout %f ..." % (
-        src_host, src_port, dst_host, dst_port, args.sock_timeout)
-    )
-    if args.verbose_mode:
-        print("Full request:")
-        print(request)
+
+def _debug_print(verbose, *strings):
+    """
+    Prints strings only if verbosity is on. Use it any time when you want to
+    toggle messages output.
+    :param verbose: (bool) Enables verbosity. If false, nothing will be printed
+    :param strings: (list) list of strings
+    """
+    if verbose:
+        for s in strings:
+            print(s)
+
+
+def send_one_ping(request, params, error_response_is_fail=False):
+    """
+    Function sends one SIP OPTIONS request, receives the response and returns
+    results
+    :param request: (string) Data is to be sent
+    :param params: (dict) params dict. See _get_params_from_cliargs() for
+    dictionary format
+    :param error_response_is_fail: Treat responses with response codes 4xx, 5xx,
+    6xx as unsuccessful requests. Otherwise any received response will be
+    considered as successful and only socket errors and timeouts will lead to
+    fail
+    :returns: (dict) results
+    """
+    result = {
+        "is_successful": True,
+        "length": 0,
+        "error": None,   # exception for further handling
+        "rtt": -1.0,   # round trip time
+        "brief_response": "",   # just heading string like SIP/2.0 200 OK
+        "resp_code": 0,   # response code
+        "full_response": "",
+    }
+
+    ping_func = tcp_send if params['proto'] == 'tcp' else udp_send
     start_time = time.time()
-    resp, length, error = send_function(
-        dst_host=dst_host,
-        request=request,
-        dst_port=dst_port,
-        src_host=src_host,
-        src_port=src_port,
-        timeout=args.sock_timeout
-    )
+    full_response, length, error = ping_func(request=request, params=params)
     end_time = time.time()
-    rtt_time = end_time - start_time
     if error:
-        print("Error occured: %s" % str(error))
-        exit(1)
+        result["is_successful"] = False
+        result["error"] = error
     else:
-        print("Response from %s (%d bytes, %f sec RTT): %s" % (
-            dst_host,
-            length,
-            rtt_time,
-            resp.split("\n")[0].strip()
-            )
+        result["full_response"] = full_response
+        result["length"] = length
+        result["brief_response"] = full_response.split("\n")[0].strip()
+        result["resp_code"] = int(result["brief_response"].split(" ")[1])
+        result["rtt"] = end_time - start_time
+        if error_response_is_fail and result["resp_code"] >= 400:
+            result["is_successful"] = False
+    return result
+
+
+def main():
+    """
+    void main( void )
+    """
+    params = _get_params_from_cliargs(_prepare_argv_parser().parse_args())
+    request = create_sip_req(
+        dst_host=params["dst_host"],
+        dst_port=params["dst_port"],
+        src_port=params["src_port"],
+        proto=params["proto"],
+    )
+    print(MSG_SENDING_REQS % (
+        params["count"],
+        "" if params["count"] == 1 else "s",
+        params["src_host"],
+        params["src_port"],
+        params["dst_host"],
+        params["dst_port"],
+        params["timeout"])
+          )
+    _debug_print(params["verbose_mode"], "Full request:", request)
+    result = send_one_ping(request, params)
+    print(MSG_RESP_FROM % (
+        params["dst_host"],
+        result["length"],
+        result["rtt"],
+        result["brief_response"]
         )
-        if args.verbose_mode:
-            print("Full response:")
-            print(resp)
-        print("\n\n")
-        exit(0)
+    )
+    _debug_print(params["verbose_mode"],
+                 "Full response:",
+                 result["full_response"])
+    print("Result: %s" % "PASS" if result["is_successful"] else "FAIL")
 
 
 if __name__ == "__main__":
