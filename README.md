@@ -13,7 +13,7 @@ positional arguments:
 
 optional arguments:
   -h, --help       show this help message and exit
-  -c COUNT         Count of requests (default 1)
+  -c COUNT         Count of requests (default 1, 0 for infinite ping)
   -p {tcp,udp}     Protocol ('udp' or 'tcp')
   -t SOCK_TIMEOUT  Socket timeout in seconds (float, default 10.0)
   -f               Treat 4xx, 5xx, 6xx responses as failed request
