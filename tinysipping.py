@@ -1,7 +1,6 @@
 #!/usr/bin/env python2
 # -*- coding: utf-8 -*-
 
-from __future__ import unicode_literals
 
 """
 tinysipping is a small tool that sends SIP OPTIONS requests to remote host and
@@ -16,6 +15,7 @@ import uuid
 import random
 import argparse
 import time
+import re
 
 VERSION = "0.0.1"
 TOOL_DESCRIPTION = "tinysipping is small tool that sends SIP OPTIONS " \
@@ -25,14 +25,19 @@ MAX_FORWARDS = 70  # times
 PING_TIMEOUT = 10.0  # seconds
 MAX_RECVBUF_SIZE = 1400  # bytes
 DFL_SIP_PORT = 5060
+DFL_REQS_COUNT = 1
+DFL_SIP_TRANSPORT = "udp"
+RE_WHITESPACE = re.compile(r"\s+")
+RTT_INFINITE = 99999999.0
 
 # messages templates for further formatting
 MSG_SENDING_REQS = "Sending %d SIP OPTIONS request%s from %s:%d to " \
                    "%s:%d with timeout %.03fs..."
-MSG_RESP_FROM = "Response from %s (%d bytes, %f sec RTT): %s"
+MSG_RESP_FROM = "SEQ #%d %s: Response from %s (%d bytes, %f sec RTT): %s"
 
 
-def create_sip_req(dst_host, dst_port=DFL_SIP_PORT, src_port=0, proto="udp"):
+def create_sip_req(dst_host, dst_port=DFL_SIP_PORT, src_port=0,
+                   proto=DFL_SIP_TRANSPORT):
     """
     Generates serialized SIP header from source data
     :param src_port: (int) source port. Used in From: header
@@ -72,7 +77,8 @@ def create_sip_req(dst_host, dst_port=DFL_SIP_PORT, src_port=0, proto="udp"):
     ])
 
 
-def create_socket(proto="udp", bind_addr="", bind_port=0, timeout=PING_TIMEOUT):
+def create_socket(proto=DFL_SIP_TRANSPORT, bind_addr="", bind_port=0,
+                  timeout=PING_TIMEOUT):
     """
     Function returns preconfigured socket for transport needs
     :param bind_addr: (str) source host or ip of interface (default "")
@@ -133,9 +139,9 @@ def tcp_send(request, params):
     """
     sock = create_socket(
         proto="tcp",
-        bind_addr=params['src_host'],
-        bind_port=params['src_port'],
-        timeout=params['timeout']
+        bind_addr=params["src_host"],
+        bind_port=params["src_port"],
+        timeout=params["timeout"]
     )
     try:
         sock.connect((params["dst_host"], params["dst_port"]))
@@ -150,6 +156,7 @@ def tcp_send(request, params):
 
 def _get_params_from_cliargs(args):
     """
+    (for internal use only)
     Function returns dictionary with params taken from cliargs.
     Dictionary content:
     {
@@ -161,6 +168,7 @@ def _get_params_from_cliargs(args):
         "timeout": (float) Socket timeout
         "proto": Protocol (tcp or udp). Assertion for proto in (tcp, udp)
         "verbose_mode": (bool) Verbose mode
+        ""bad_resp_is_fail"": (bool) Treat 4xx, 5xx, 6xx responses as fail
     }
     :param args: (argparse.Namespace) argparse CLI arguments
     :return: (dict) dictionary with params
@@ -174,6 +182,7 @@ def _get_params_from_cliargs(args):
         "timeout": args.sock_timeout,
         "proto": args.proto.lower(),  # let user set TCP or tcp
         "verbose_mode": args.verbose_mode,
+        "bad_resp_is_fail": args.bad_resp_is_fail
     }
     if ":" in args.destination:
         params["dst_host"], dst_port = args.destination.split(":")
@@ -186,8 +195,8 @@ def _get_params_from_cliargs(args):
             params["src_port"] = int(src_port)
         else:
             params["src_host"] = args.src_sock
-    assert (params['proto'] in ('tcp', 'udp'))  # tcp and udp support only
-    assert (params['dst_host'])  # dst_host is mandatory parameter
+    assert (params["proto"] in ("tcp", "udp"))  # tcp and udp support only
+    assert (params["dst_host"])  # dst_host is mandatory parameter
     return params
 
 
@@ -203,24 +212,24 @@ def _prepare_argv_parser():
     )
     ap.add_argument(
         "destination",
-        help="Destination host <ip/hostname>[:port]",
+        help="Destination host <dst>[:port] (default port %d)" % DFL_SIP_PORT,
         type=str,
         action="store",
     )
     ap.add_argument(
         "-c",
         dest="count",
-        help="Count of requests (default 1)",
+        help="Count of requests (default %d)" % DFL_REQS_COUNT,
         type=int,
-        default=1
+        default=DFL_REQS_COUNT
     )
     ap.add_argument(
         "-p",
         dest="proto",
-        help="Protocol ('udp' or 'tcp')",
+        help="Protocol (udp or tcp)",
         type=str,
         choices=("tcp", "udp"),
-        default="udp"
+        default=DFL_SIP_TRANSPORT
     )
     ap.add_argument(
         "-t",
@@ -229,6 +238,12 @@ def _prepare_argv_parser():
         type=float,
         action="store",
         default=PING_TIMEOUT
+    )
+    ap.add_argument(
+        "-f",
+        dest="bad_resp_is_fail",
+        help="Treat 4xx, 5xx, 6xx responses as failed request",
+        action="store_true"
     )
     ap.add_argument(
         "-s",
@@ -250,6 +265,7 @@ def _prepare_argv_parser():
 
 def _debug_print(verbose, *strings):
     """
+    (for internal use only)
     Prints strings only if verbosity is on. Use it any time when you want to
     toggle messages output.
     :param verbose: (bool) Enables verbosity. If false, nothing will be printed
@@ -260,14 +276,14 @@ def _debug_print(verbose, *strings):
             print(s)
 
 
-def send_one_ping(request, params, error_response_is_fail=False):
+def send_one_request(request, params, bad_resp_is_fail=False):
     """
     Function sends one SIP OPTIONS request, receives the response and returns
     results
     :param request: (string) Data is to be sent
     :param params: (dict) params dict. See _get_params_from_cliargs() for
     dictionary format
-    :param error_response_is_fail: Treat responses with response codes 4xx, 5xx,
+    :param bad_resp_is_fail: Treat responses with response codes 4xx, 5xx,
     6xx as unsuccessful requests. Otherwise any received response will be
     considered as successful and only socket errors and timeouts will lead to
     fail
@@ -282,23 +298,131 @@ def send_one_ping(request, params, error_response_is_fail=False):
         "resp_code": 0,   # response code
         "full_response": "",
     }
-
-    ping_func = tcp_send if params['proto'] == 'tcp' else udp_send
+    ping_func = tcp_send if params["proto"] == "tcp" else udp_send
     start_time = time.time()
     full_response, length, error = ping_func(request=request, params=params)
     end_time = time.time()
     if error:
         result["is_successful"] = False
         result["error"] = error
+        result["brief_response"] = str(error)
     else:
         result["full_response"] = full_response
         result["length"] = length
         result["brief_response"] = full_response.split("\n")[0].strip()
         result["resp_code"] = int(result["brief_response"].split(" ")[1])
         result["rtt"] = end_time - start_time
-        if error_response_is_fail and result["resp_code"] >= 400:
+        if bad_resp_is_fail and result["resp_code"] >= 400:
             result["is_successful"] = False
     return result
+
+
+def calculate_stats(results):
+    """
+    Calculates overall statistics with RTT, response codes etc.
+    :param results: (list) list of dicts with results of single test
+    :returns: (dict) overall statistics
+    """
+    min_rtt = RTT_INFINITE
+    max_rtt = 0.0
+    total_rtt_sum = 0.0
+    successful_requests = 0
+    failed_requests = 0
+    answered_requests = 0
+    response_codes = {}
+    socket_error_causes = {}
+    total_requests = len(results)
+    for i in results:
+        if i["is_successful"]:
+            successful_requests += 1
+        else:
+            failed_requests += 1
+        if i["rtt"] >= 0:
+            min_rtt = i["rtt"] if (i["rtt"] < min_rtt) else min_rtt
+            max_rtt = i["rtt"] if (i["rtt"] > max_rtt) else max_rtt
+            total_rtt_sum += i["rtt"]
+        try:
+            response_codes[int(i["resp_code"])] += 1
+        except KeyError:    # it means there"s no such response code before
+            response_codes[int(i["resp_code"])] = 1
+        if i["error"]:
+            cause_name = re.sub(r"\s+", "_", str(i["error"])).lower()
+            try:
+                socket_error_causes[cause_name] += 1
+            except KeyError:  # it means there"s no such response code before
+                socket_error_causes[cause_name] = 1
+        else:
+            answered_requests += 1
+    try:
+        del response_codes[0]   # 0 is a stub response code
+    except KeyError:
+        pass
+    avg_rtt = -1.0 if not answered_requests \
+        else float(total_rtt_sum) / float(answered_requests)
+    return {
+        "total": total_requests,
+        "successful": successful_requests,
+        "failed": failed_requests,
+        "answered": answered_requests,
+        "min_rtt": -1.0 if min_rtt == RTT_INFINITE else min_rtt,
+        "max_rtt": max_rtt,
+        "avg_rtt": avg_rtt,
+        "response_codes": response_codes,
+        "socket_error_causes": socket_error_causes,
+    }
+
+
+def pretty_print_stats(stats):
+    """
+    Just prints statistics in pretty form
+    :param stats: (dict) statistics
+    """
+    total_requests = stats["total"]
+    answered_percentage = 0.0 if not stats["answered"] \
+        else (float(stats["answered"]) / float(total_requests))*100.0
+    success_percentage = 0.0 if not stats["successful"] \
+        else (float(stats["successful"]) / float(total_requests))*100.0
+    failed_percentage = 0.0 if not stats["failed"] \
+        else (float(stats["failed"]) / float(total_requests))*100.0
+    print("\n")
+    print("------ FINISH -------")
+    print("Total requests:          %5d" % total_requests)
+    print(
+        "Answered requests:       %5d / %0.3f %%" % (
+            stats["answered"],
+            answered_percentage
+        )
+    )
+    print(
+        "Successful requests:     %5d / %0.3f %%" % (
+            stats["successful"],
+            success_percentage
+        )
+    )
+    print(
+        "Failed requests:         %5d / %0.3f %%" % (
+            stats["failed"],
+            failed_percentage
+        )
+    )
+    print("\n")
+    if stats["answered"]:
+        print("RTT stats:")
+        print("min.RTT: %0.3f" % stats["min_rtt"])
+        print("avg.RTT: %0.3f" % stats["avg_rtt"])
+        print("max.RTT: %0.3f" % stats["max_rtt"])
+        print("\n")
+    if stats["socket_error_causes"]:
+        print("Socket errors causes stats:")
+        for k, v in stats["socket_error_causes"].items():
+            cause_percentage = 100.0 * (float(v) / float(total_requests))
+            print("%3s: %6s / %0.3f %%" % (k, v, cause_percentage))
+        print("\n")
+    if stats["response_codes"]:
+        print("Response codes stats:")
+        for k, v in stats["response_codes"].items():
+            resp_code_percentage = 100.0 * (float(v) / float(total_requests))
+            print("%3d: %6d / %0.3f" % (k, v,  resp_code_percentage))
 
 
 def main():
@@ -306,12 +430,7 @@ def main():
     void main( void )
     """
     params = _get_params_from_cliargs(_prepare_argv_parser().parse_args())
-    request = create_sip_req(
-        dst_host=params["dst_host"],
-        dst_port=params["dst_port"],
-        src_port=params["src_port"],
-        proto=params["proto"],
-    )
+    results = []
     print(MSG_SENDING_REQS % (
         params["count"],
         "" if params["count"] == 1 else "s",
@@ -319,21 +438,32 @@ def main():
         params["src_port"],
         params["dst_host"],
         params["dst_port"],
-        params["timeout"])
-          )
-    _debug_print(params["verbose_mode"], "Full request:", request)
-    result = send_one_ping(request, params)
-    print(MSG_RESP_FROM % (
-        params["dst_host"],
-        result["length"],
-        result["rtt"],
-        result["brief_response"]
+        params["timeout"]
         )
     )
-    _debug_print(params["verbose_mode"],
-                 "Full response:",
-                 result["full_response"])
-    print("Result: %s" % "PASS" if result["is_successful"] else "FAIL")
+    for seq in range(0, params["count"]):
+        request = create_sip_req(
+            dst_host=params["dst_host"],
+            dst_port=params["dst_port"],
+            src_port=params["src_port"],
+            proto=params["proto"],
+        )
+        result = send_one_request(request, params, params["bad_resp_is_fail"])
+        print(MSG_RESP_FROM % (
+            seq,
+            "PASS" if result["is_successful"] else "FAIL",
+            params["dst_host"],
+            result["length"],
+            result["rtt"],
+            result["brief_response"],
+            )
+        )
+        _debug_print(params["verbose_mode"], "Full request:", request)
+        _debug_print(params["verbose_mode"],
+                     "Full response:",
+                     result["full_response"])
+        results.append(result)
+    pretty_print_stats(calculate_stats(results))
 
 
 if __name__ == "__main__":
