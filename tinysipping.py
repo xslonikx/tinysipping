@@ -24,7 +24,7 @@ MAX_FORWARDS = 70  # times
 PING_TIMEOUT = 10.0  # seconds
 MAX_RECVBUF_SIZE = 1400  # bytes
 DFL_SIP_PORT = 5060
-DFL_REQS_COUNT = 1
+DFL_REQS_COUNT = 0
 DFL_SIP_TRANSPORT = "udp"
 RTT_INFINITE = 99999999.0
 
@@ -217,7 +217,7 @@ def _prepare_argv_parser():
     ap.add_argument(
         "-c",
         dest="count",
-        help="Count of requests (default %d)" % DFL_REQS_COUNT,
+        help="Num of requests, 0 for infinite ping (default)" % DFL_REQS_COUNT,
         type=int,
         default=DFL_REQS_COUNT
     )
