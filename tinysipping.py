@@ -16,7 +16,7 @@ import argparse
 import time
 import re
 
-VERSION = "0.0.2"
+VERSION = "0.0.3"
 TOOL_DESCRIPTION = "tinysipping is small tool that sends SIP OPTIONS " \
                    "requests to remote host and reads responses. "
 
