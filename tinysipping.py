@@ -217,7 +217,7 @@ def _prepare_argv_parser():
     ap.add_argument(
         "-c",
         dest="count",
-        help="Count of requests (default %d), 0 for infinite" % DFL_REQS_COUNT,
+        help="Num of requests, 0 for infinite ping (default)" % DFL_REQS_COUNT,
         type=int,
         default=DFL_REQS_COUNT
     )
