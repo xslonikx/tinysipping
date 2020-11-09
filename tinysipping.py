@@ -1,7 +1,6 @@
 #!/usr/bin/env python2
 # -*- coding: utf-8 -*-
 
-
 """
 tinysipping is a small tool that sends SIP OPTIONS requests to remote host and
 reads responses.
@@ -27,11 +26,10 @@ MAX_RECVBUF_SIZE = 1400  # bytes
 DFL_SIP_PORT = 5060
 DFL_REQS_COUNT = 1
 DFL_SIP_TRANSPORT = "udp"
-RE_WHITESPACE = re.compile(r"\s+")
 RTT_INFINITE = 99999999.0
 
 # messages templates for further formatting
-MSG_SENDING_REQS = "Sending %d SIP OPTIONS request%s from %s:%d to " \
+MSG_SENDING_REQS = "Sending %s SIP OPTIONS request%s from %s:%d to " \
                    "%s:%d with timeout %.03fs..."
 MSG_RESP_FROM = "SEQ #%d %s: Response from %s (%d bytes, %f sec RTT): %s"
 
@@ -276,17 +274,13 @@ def _debug_print(verbose, *strings):
             print(s)
 
 
-def send_one_request(request, params, bad_resp_is_fail=False):
+def send_one_request(request, params):
     """
     Function sends one SIP OPTIONS request, receives the response and returns
     results
     :param request: (string) Data is to be sent
     :param params: (dict) params dict. See _get_params_from_cliargs() for
     dictionary format
-    :param bad_resp_is_fail: Treat responses with response codes 4xx, 5xx,
-    6xx as unsuccessful requests. Otherwise any received response will be
-    considered as successful and only socket errors and timeouts will lead to
-    fail
     :returns: (dict) results
     """
     result = {
@@ -312,7 +306,7 @@ def send_one_request(request, params, bad_resp_is_fail=False):
         result["brief_response"] = full_response.split("\n")[0].strip()
         result["resp_code"] = int(result["brief_response"].split(" ")[1])
         result["rtt"] = end_time - start_time
-        if bad_resp_is_fail and result["resp_code"] >= 400:
+        if params["bad_resp_is_fail"] and result["resp_code"] >= 400:
             result["is_successful"] = False
     return result
 
@@ -425,6 +419,38 @@ def pretty_print_stats(stats):
             print("%3d: %6d / %0.3f" % (k, v,  resp_code_percentage))
 
 
+def send_sequential_req_with_print(seq_num, params):
+    """
+    Wrapper around send_one_request() with progress messages printing
+    :param seq_num: (int) current sequence number
+    :param params: (dict) parameters
+    :return: (dict) results
+    """
+    request = create_sip_req(
+        dst_host=params["dst_host"],
+        dst_port=params["dst_port"],
+        src_port=params["src_port"],
+        proto=params["proto"],
+    )
+    result = send_one_request(request, params)
+    print(MSG_RESP_FROM % (
+        seq_num,
+        "PASS" if result["is_successful"] else "FAIL",
+        params["dst_host"],
+        result["length"],
+        result["rtt"],
+        result["brief_response"],
+        )
+    )
+    _debug_print(params["verbose_mode"], "Full request:", request)
+    _debug_print(
+        params["verbose_mode"],
+        "Full response:",
+        result["full_response"]
+    )
+    return result
+
+
 def main():
     """
     void main( void )
@@ -432,7 +458,7 @@ def main():
     params = _get_params_from_cliargs(_prepare_argv_parser().parse_args())
     results = []
     print(MSG_SENDING_REQS % (
-        params["count"],
+        "infinitely" if not params["count"] else params["count"],
         "" if params["count"] == 1 else "s",
         params["src_host"],
         params["src_port"],
@@ -441,28 +467,20 @@ def main():
         params["timeout"]
         )
     )
-    for seq in range(0, params["count"]):
-        request = create_sip_req(
-            dst_host=params["dst_host"],
-            dst_port=params["dst_port"],
-            src_port=params["src_port"],
-            proto=params["proto"],
-        )
-        result = send_one_request(request, params, params["bad_resp_is_fail"])
-        print(MSG_RESP_FROM % (
-            seq,
-            "PASS" if result["is_successful"] else "FAIL",
-            params["dst_host"],
-            result["length"],
-            result["rtt"],
-            result["brief_response"],
-            )
-        )
-        _debug_print(params["verbose_mode"], "Full request:", request)
-        _debug_print(params["verbose_mode"],
-                     "Full response:",
-                     result["full_response"])
-        results.append(result)
+    try:
+        if not params["count"]:   # 0 means infinite ping
+            seq = 0
+            while True:
+                result = send_sequential_req_with_print(seq, params)
+                results.append(result)
+                seq += 1
+        else:
+            for seq in range(0, params["count"]):
+                result = send_sequential_req_with_print(seq, params)
+                results.append(result)
+    except KeyboardInterrupt:
+        print("\nInterrupted after %d request%s" %
+              (seq, "" if seq == 1 else "s"))
     pretty_print_stats(calculate_stats(results))
 
 
