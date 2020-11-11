@@ -16,7 +16,7 @@ import argparse
 import time
 import re
 
-VERSION = "0.0.3"
+VERSION = "0.0.4"
 TOOL_DESCRIPTION = "tinysipping is small tool that sends SIP OPTIONS " \
                    "requests to remote host and reads responses. "
 
@@ -27,6 +27,7 @@ DFL_SIP_PORT = 5060
 DFL_REQS_COUNT = 0
 DFL_SIP_TRANSPORT = "udp"
 RTT_INFINITE = 99999999.0
+DFL_SEND_PAUSE = 0.5
 
 # messages templates for further formatting
 MSG_SENDING_REQS = "Sending %s SIP OPTIONS request%s from %s:%d to " \
@@ -250,7 +251,7 @@ def _prepare_argv_parser():
         help="Pause between transmits (default 0.5. 0 for immediate send)",
         action="store",
         type=float,
-        default=0.5
+        default=DFL_SEND_PAUSE
     )
     ap.add_argument(
         "-s",
