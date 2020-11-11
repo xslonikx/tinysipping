@@ -180,7 +180,8 @@ def _get_params_from_cliargs(args):
         "timeout": args.sock_timeout,
         "proto": args.proto.lower(),  # let user set TCP or tcp
         "verbose_mode": args.verbose_mode,
-        "bad_resp_is_fail": args.bad_resp_is_fail
+        "bad_resp_is_fail": args.bad_resp_is_fail,
+        "pause_between_transmits": args.pause_between_transmits,
     }
     if ":" in args.destination:
         params["dst_host"], dst_port = args.destination.split(":")
@@ -242,6 +243,14 @@ def _prepare_argv_parser():
         dest="bad_resp_is_fail",
         help="Treat 4xx, 5xx, 6xx responses as failed request",
         action="store_true"
+    )
+    ap.add_argument(
+        "-l",
+        dest="pause_between_transmits",
+        help="Pause between transmits (default 0.5. 0 for immediate send)",
+        action="store",
+        type=float,
+        default=0.5
     )
     ap.add_argument(
         "-s",
@@ -474,14 +483,19 @@ def main():
                 result = send_sequential_req_with_print(seq, params)
                 results.append(result)
                 seq += 1
+                if params["pause_between_transmits"]:
+                    time.sleep(params["pause_between_transmits"])
         else:
             for seq in range(0, params["count"]):
                 result = send_sequential_req_with_print(seq, params)
                 results.append(result)
+                if params["pause_between_transmits"]:
+                    time.sleep(params["pause_between_transmits"])
     except KeyboardInterrupt:
         print("\nInterrupted after %d request%s" %
               (seq, "" if seq == 1 else "s"))
     pretty_print_stats(calculate_stats(results))
+    exit(0)
 
 
 if __name__ == "__main__":

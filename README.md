@@ -9,16 +9,18 @@ copypasting to REPL sacrificing some PEP-8 recommedations..
 ```
 Usage: 
 positional arguments:
-  destination      Destination host <dst>[:port] (default port 5060)
+  destination           Destination host <dst>[:port] (default port 5060)
 
 optional arguments:
-  -h, --help       show this help message and exit
-  -c COUNT         Number of requests, 0 for infinite ping (default)
-  -p {tcp,udp}     Protocol (udp or tcp)
-  -t SOCK_TIMEOUT  Socket timeout in seconds (float, default 10.0)
-  -f               Treat 4xx, 5xx, 6xx responses as failed request
-  -s SRC_SOCK      Source iface [ip/hostname]:[port] (hostname part is optional, possible to type ":PORT" form to just
-                   set srcport)
-  -v               Verbose mode (show sent and received content)
-  -V               show program's version number and exit
+  -h, --help            show this help message and exit
+  -c COUNT              Number of requests, 0 for infinite ping (default)
+  -p {tcp,udp}          Protocol (udp or tcp)
+  -t SOCK_TIMEOUT       Socket timeout in seconds (float, default 10.0)
+  -f                    Treat 4xx, 5xx, 6xx responses as failed request
+  -l PAUSE_BETWEEN_TRANSMITS
+                        Pause between transmits (default 0.5. 0 for immediate send)
+  -s SRC_SOCK           Source iface [ip/hostname]:[port] (hostname part is optional, possible to type ":PORT" form to
+                        just set srcport)
+  -v                    Verbose mode (show sent and received content)
+  -V                    show program's version number and exit
 ```
