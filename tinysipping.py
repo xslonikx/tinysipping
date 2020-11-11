@@ -315,7 +315,7 @@ def _prepare_argv_parser():
         action="store",
         default=DFL_PAYLOAD_SIZE
     )
-
+    ap.add_argument("-V", action="version", version=VERSION)
     return ap
 
 
