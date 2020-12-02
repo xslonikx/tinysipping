@@ -16,7 +16,10 @@ import argparse
 import time
 import re
 
-VERSION = "0.0.5"
+from socket import SOL_SOCKET, SO_REUSEADDR, SO_REUSEPORT, \
+    SOCK_DGRAM,  SOCK_STREAM, AF_INET, gethostbyname, gethostname
+
+VERSION = "0.0.6"
 TOOL_DESCRIPTION = "tinysipping is small tool that sends SIP OPTIONS " \
                    "requests to remote host and reads responses. "
 
@@ -40,6 +43,99 @@ MSG_RESP_FROM = "SEQ #{} ({} bytes sent) {}: Response from {} ({} bytes, " \
                 "{:.03f} sec RTT): {}"
 
 
+class AbstractWorker():
+    def __init__(self, params):
+        self._params = params
+        self._sock = None
+        self._create_sock()   # overload this in children
+        self._configure_socket()
+
+    def _create_sock(self):
+        """
+        'virtual' method. must be overloaded in child classes
+        """
+        raise NotImplemented("Please, don't instantiate abstract class")
+
+    def _configure_socket(self):
+        self._sock.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
+        self._sock.setsockopt(SOL_SOCKET, SO_REUSEPORT, 1)
+        self._sock.settimeout(self._params["timeout"])
+        # better use ipaddress lib for this check, but, sadly, it's not always
+        # available out-of-box on centos7
+        print(self._params)
+        bind_addr = self._params["bind_addr"] \
+            if not self._params["bind_addr"].startswith("127.") \
+            else ""
+        self._sock.bind((bind_addr, self._params["bind_port"]))
+
+    def close(self):
+        self._sock.close()
+
+    def send(self, req):
+        """
+        'virtual' method. must be overloaded in child classes
+        """
+        raise NotImplemented("Please, don't instantiate abstract class")
+
+    def __del__(self):
+        self.close()
+
+
+class TCPWorker(AbstractWorker):
+    def _create_sock(self):
+        self._sock = socket.socket(AF_INET, SOCK_DGRAM)
+
+    def send(self, req):
+        """
+        Function performs single sending of SIP packet
+        :param req: (str) data to send
+        :returns: tuple(string, int, exc/None) - buffer and length
+        """
+        try:
+            self._sock.connect((self._params["dst_host"],
+                                self._params["dst_port"]))
+            self._sock.sendall(req.encode())
+            raw = self._sock.recv(MAX_RECVBUF_SIZE)
+            data = raw.decode(encoding="utf-8", errors="ignore")
+            return data, len(raw), None
+        except (socket.timeout, socket.error) as e:
+            return "", 0, e
+
+
+class UDPWorker(AbstractWorker):
+    def _create_sock(self):
+        self._sock = socket.socket(AF_INET, SOCK_DGRAM)
+
+    def send(self, req):
+        """
+        Function performs single sending of SIP packet
+        :param req: (str) data to send
+        :returns: tuple(str, int, exc/None) - buffer, length and possible err
+        """
+        dstip = gethostbyname(self._params["dst_host"])
+        try:
+            bin_req = req.encode()
+            self._sock.sendto(bin_req, (dstip, self._params["dst_port"]))
+            while True:
+                raw, addr = self._sock.recvfrom(MAX_RECVBUF_SIZE)
+                rhost, rport = addr
+                if (rhost == dstip) and (rport == self._params["dst_port"]):
+                    data = raw.decode(encoding="utf-8", errors="ignore")
+                    return data, len(raw), None
+        except (socket.timeout, socket.error) as e:
+            return "", 0, e
+
+    def close(self):
+        """
+        Method just closes the underlying socket
+        """
+        self._sock.close()
+
+
+class TLSWorker(TCPWorker):
+    pass
+
+
 def gen_padding(size=DFL_PAYLOAD_SIZE):
     """
     Returns padding for SIP header or body
@@ -49,11 +145,11 @@ def gen_padding(size=DFL_PAYLOAD_SIZE):
     return PADDING_PATTERN[:size]
 
 
-def create_sip_req(dst_host, dst_port=DFL_SIP_PORT, src_port=0,
+def create_sip_req(dst_host, dst_port=DFL_SIP_PORT, bind_port=0,
                    proto=DFL_SIP_TRANSPORT, request_size=DFL_PAYLOAD_SIZE):
     """
     Generates serialized SIP header from source data
-    :param src_port: (int) source port. Used in From: header
+    :param bind_port: (int) source port. Used in From: header
     :param dst_port: (int) destination port. Used in URI and To: header
     :param dst_host: (str) ip address or hostname of remote side.
     :param proto: (str) tcp or udp, otherwise ValueError will raise
@@ -61,7 +157,7 @@ def create_sip_req(dst_host, dst_port=DFL_SIP_PORT, src_port=0,
     :returns: (string): SIP header in human-readable format. Don"t forget to
                         encode it to bytes
     """
-    my_hostname = socket.gethostname()
+    my_hostname = gethostname()
     call_id = "{0}-{1}".format(my_hostname, str(uuid.uuid4()))
 
     # According to RFC3261, the branch ID MUST always begin with the characters
@@ -82,7 +178,7 @@ def create_sip_req(dst_host, dst_port=DFL_SIP_PORT, src_port=0,
         "Max-Forwards: {}".format(MAX_FORWARDS),
         "To: <sip:options@{}:{}>".format(dst_host, dst_port),
         "From: <sip:options@{}:{}>;tag={}".format(
-            my_hostname, src_port, tag_id
+            my_hostname, bind_port, tag_id
         ),
         "Call-ID: {}".format(call_id),
         "CSeq: {} OPTIONS".format(cseq),
@@ -99,85 +195,6 @@ def create_sip_req(dst_host, dst_port=DFL_SIP_PORT, src_port=0,
     return request
 
 
-def create_socket(proto=DFL_SIP_TRANSPORT, bind_addr="", bind_port=0,
-                  timeout=DFL_PING_TIMEOUT):
-    """
-    Function returns preconfigured socket for transport needs
-    :param bind_addr: (str) source host or ip of interface (default "")
-    :param bind_port: (int) source port (default 0)
-    :param proto: (str) transport protocol - "tcp" or "udp"
-    :param timeout: (float) socket timeout
-    :return: (socket.socket) socket prepared for transmission
-    """
-    sock_type = socket.SOCK_DGRAM if proto == "udp" else socket.SOCK_STREAM
-    sock = socket.socket(socket.AF_INET, sock_type)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-    if bind_addr.startswith("127."):  # checking for loopback ip.
-        sock.bind(("", bind_port))
-    else:
-        sock.bind((bind_addr, bind_port))
-    sock.settimeout(timeout)
-    return sock
-
-
-def udp_send(request, params):
-    """
-    Function performs single sending of SIP packet
-    :param request: (str) data to send
-    :param params: params dict. See _get_params_from_cliargs() for
-    dictionary format
-    :returns: tuple(string, int, exc/None) - buffer, length and possible error
-    """
-    dst_ipaddr = socket.gethostbyname(params["dst_host"])
-    sock = create_socket(
-        proto="udp",
-        bind_addr=params["src_host"],
-        bind_port=params["src_port"],
-        timeout=params["timeout"]
-    )
-
-    try:
-        sock.sendto(request.encode(), (dst_ipaddr, params["dst_port"]))
-        while True:
-            data, addr = sock.recvfrom(MAX_RECVBUF_SIZE)
-            remote_host, remote_port = addr
-            if remote_host == dst_ipaddr and remote_port == params["dst_port"]:
-                return data.decode(encoding="utf-8", errors="ignore"), \
-                       len(data), \
-                       None
-    except (socket.timeout, socket.error) as e:
-        return "", 0, e
-    finally:
-        sock.close()
-
-
-def tcp_send(request, params):
-    """
-    Function performs single sending of SIP packet
-    :param request: (str) data to send
-    :param params: params dict. See _get_params_from_cliargs() for
-    dictionary format
-    :returns: tuple(string, int, exc/None) - buffer and length
-    """
-    sock = create_socket(
-        proto="tcp",
-        bind_addr=params["src_host"],
-        bind_port=params["src_port"],
-        timeout=params["timeout"]
-    )
-
-    try:
-        sock.connect((params["dst_host"], params["dst_port"]))
-        sock.sendall(request.encode())
-        data = sock.recv(MAX_RECVBUF_SIZE)
-        return data.decode(encoding="utf-8", errors="ignore"), len(data), None
-    except (socket.timeout, socket.error) as e:
-        return "", 0, e
-    finally:
-        sock.close()
-
-
 def _get_params_from_cliargs(args):
     """
     (for internal use only)
@@ -186,22 +203,22 @@ def _get_params_from_cliargs(args):
     {
         "dst_host": (str) Destination host. Assertion for not empty
         "dst_port": (int) Destination port.
-        "src_host": (str) Source interface ip
-        "src_port": (int) Source port
+        "bind_addr": (str) Source interface ip
+        "bind_port": (int) Source port
         "count": (int) Count of requests that are to be sent
         "timeout": (float) Socket timeout
         "proto": Protocol (tcp or udp). Assertion for proto in (tcp, udp)
         "verbose_mode": (bool) Verbose mode
         ""ad_resp_is_fail": (bool) Treat 4xx, 5xx, 6xx responses as fail
     }
-    :param raw_cli_args: (argparse.Namespace) argparse CLI arguments
+    :param args: (argparse.Namespace) argparse CLI arguments
     :return: (dict) dictionary with params
     """
     params = {
         "dst_host": None,  # value is to be redefined below
         "dst_port": DFL_SIP_PORT,  # value is to be redefined below
-        "src_host": "",
-        "src_port": 0,
+        "bind_addr": "",
+        "bind_port": 0,
         "count": args.count,
         "timeout": args.sock_timeout,
         "proto": args.proto.lower(),  # let user set TCP or tcp
@@ -219,10 +236,10 @@ def _get_params_from_cliargs(args):
 
     if args.src_sock:
         if ":" in args.src_sock:
-            params["src_host"], src_port = args.src_sock.split(":")
-            params["src_port"] = int(src_port)
+            params["bind_addr"], bind_port = args.src_sock.split(":")
+            params["bind_port"] = int(bind_port)
         else:
-            params["src_host"] = args.src_sock
+            params["bind_addr"] = args.src_sock
 
     assert (params["proto"] in ("tcp", "udp"))  # tcp and udp support only
     assert (params["dst_host"])  # dst_host is mandatory parameter
@@ -259,9 +276,9 @@ def _prepare_argv_parser():
     ap.add_argument(
         "-p",
         dest="proto",
-        help="Protocol (udp or tcp)",
+        help="Protocol (udp, tcp or tls)",
         type=str,
-        choices=("tcp", "udp"),
+        choices=("tcp", "udp", "tls"),
         default=DFL_SIP_TRANSPORT
     )
 
@@ -332,13 +349,13 @@ def _debug_print(verbose, *strings):
             print(s)
 
 
-def send_one_request(request, params):
+def send_one_request(worker, request, bad_resp_is_fail=True):
     """
     Function sends one SIP OPTIONS request, receives the response and returns
     results
+    :param worker: (AbstractWorker) worker
     :param request: (string) Data is to be sent
-    :param params: (dict) params dict. See _get_params_from_cliargs() for
-    dictionary format
+    :param bad_resp_is_fail: (bool) treat response code >4xx as error or not
     :returns: (dict) results
     """
     result = {
@@ -351,9 +368,8 @@ def send_one_request(request, params):
         "full_response": "",
     }
 
-    ping_func = tcp_send if params["proto"] == "tcp" else udp_send
     start_time = time.time()
-    full_response, length, error = ping_func(request=request, params=params)
+    full_response, length, error = worker.send(req=request)
     end_time = time.time()
 
     if error:
@@ -366,7 +382,7 @@ def send_one_request(request, params):
         result["brief_response"] = full_response.split("\n")[0].strip()
         result["resp_code"] = int(result["brief_response"].split(" ")[1])
         result["rtt"] = end_time - start_time
-        if params["bad_resp_is_fail"] and result["resp_code"] >= 400:
+        if bad_resp_is_fail and result["resp_code"] >= 400:
             result["is_successful"] = False
     return result
 
@@ -472,7 +488,7 @@ def pretty_print_stats(stats):
         print("Socket errors causes stats:")
         for k, v in stats["socket_error_causes"].items():
             cause_percentage = 100.0 * (float(v) / float(total_requests))
-            print("{:15s} {:5s}/{:0.3f}%".format((k, v, cause_percentage)))
+            print("{:15s} {:5s}/{:0.3f}%".format(k, v, cause_percentage))
         print("\n")
 
     if stats["response_codes"]:
@@ -482,9 +498,10 @@ def pretty_print_stats(stats):
             print(perc_fmt_str.format(str(k), v,  resp_code_percentage))
 
 
-def send_sequential_req_with_print(seq_num, params):
+def send_sequential_req_with_print(worker, seq_num, params):
     """
     Wrapper around send_one_request() with progress messages printing
+    :param worker: (AbstractWorker) worker
     :param seq_num: (int) current sequence number
     :param params: (dict) parameters
     :return: (dict) results
@@ -492,11 +509,12 @@ def send_sequential_req_with_print(seq_num, params):
     request = create_sip_req(
         dst_host=params["dst_host"],
         dst_port=params["dst_port"],
-        src_port=params["src_port"],
+        bind_port=params["bind_port"],
         proto=params["proto"],
         request_size=params["payload_size"]
     )
-    result = send_one_request(request, params)
+
+    result = send_one_request(worker, request, params)
     _msg_resp = MSG_RESP_FROM.format(
         seq_num,
         len(request),
@@ -517,17 +535,29 @@ def send_sequential_req_with_print(seq_num, params):
     return result
 
 
+def get_worker(params):
+    assert params["proto"] in ("tcp", "udp")
+    if params["proto"] == "tcp":
+        return TCPWorker(params)
+    elif params["proto"] == "udp":
+        return UDPWorker(params)
+    elif params["proto"] == "tls":
+        raise NotImplemented("Still not implemented")
+        #  return TLSWorker(params)
+
+
 def main():
     """
     void main( void )
     """
     params = _get_params_from_cliargs(_prepare_argv_parser().parse_args())
     results = []
+    worker = get_worker(params)
 
     # Sent from <host:port> substring. Places into resulting message if
     # <src_interface>:<port> was specified
-    _from_substr = "" if not params["src_host"] and not params["src_port"] \
-        else "from {}:{} ".format(params["src_host"], params["src_port"])
+    _from_substr = "" if not params["bind_addr"] and not params["bind_port"] \
+        else "from {}:{} ".format(params["bind_addr"], params["bind_port"])
     sending_req_msg = MSG_SENDING_REQS.format(
         "infinitely" if not params["count"] else params["count"],
         "" if params["count"] == 1 else "s",
@@ -540,18 +570,18 @@ def main():
     print(sending_req_msg)
     print("{}\n".format("-" * len(sending_req_msg)))
 
+    seq = 0
     try:
         if not params["count"]:   # 0 means infinite ping
-            seq = 0
             while True:
-                result = send_sequential_req_with_print(seq, params)
+                result = send_sequential_req_with_print(worker, seq, params)
                 results.append(result)
                 seq += 1
                 if params["pause_between_transmits"]:
                     time.sleep(params["pause_between_transmits"])
         else:
             for seq in range(0, params["count"]):
-                result = send_sequential_req_with_print(seq, params)
+                result = send_sequential_req_with_print(worker, seq, params)
                 results.append(result)
                 if params["pause_between_transmits"]:
                     time.sleep(params["pause_between_transmits"])
