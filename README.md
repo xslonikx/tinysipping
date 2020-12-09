@@ -3,8 +3,6 @@ Tiny SIP Ping - Small script which can perform simple SIP OPTIONS ping and read
 response.  
 Deliberately written in Python2.7-compatible style without any external 
 dependencies for CentOS 7 compatibility.  
-Also, it was quite minified for comfortable
-copypasting to REPL sacrificing some PEP-8 recommendations..    
 
 ```
 Usage:
