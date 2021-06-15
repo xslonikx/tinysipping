@@ -62,7 +62,6 @@ class AbstractWorker():
         self._sock.settimeout(self._params["timeout"])
         # better use ipaddress lib for this check, but, sadly, it's not always
         # available out-of-box on centos7
-        print(self._params)
         bind_addr = self._params["bind_addr"] \
             if not self._params["bind_addr"].startswith("127.") \
             else ""
@@ -488,7 +487,11 @@ def pretty_print_stats(stats):
         print("Socket errors causes stats:")
         for k, v in stats["socket_error_causes"].items():
             cause_percentage = 100.0 * (float(v) / float(total_requests))
-            print("{:15s} {:5s}/{:0.3f}%".format(k, v, cause_percentage))
+            print("{:15s} {:5s}/{:0.3f}%".format(
+                str(k),
+                str(v),
+                cause_percentage)
+            )
         print("\n")
 
     if stats["response_codes"]:
