@@ -5,8 +5,7 @@
 tinysipping is a small tool that sends SIP OPTIONS requests to remote host and
 reads responses.
 Written in Python2.7-compatible style without external dependencies
-for CentOS 7 compatibility. Also, it was quite minified for comfortable
-copypasting to REPL sacrificing some PEP-8 recommedations.
+for CentOS 7 compatibility.
 """
 
 import socket
@@ -15,11 +14,18 @@ import random
 import argparse
 import time
 import re
+import platform
 
-from socket import SOL_SOCKET, SO_REUSEADDR, SO_REUSEPORT, \
-    SOCK_DGRAM,  SOCK_STREAM, AF_INET, gethostbyname, gethostname
+from abc import abstractmethod
 
-VERSION = "0.0.6"
+from socket import SOL_SOCKET, SOL_IP, SO_REUSEADDR, SO_REUSEPORT, \
+    IPPROTO_IP, SOCK_DGRAM, SOCK_STREAM, AF_INET, \
+    gethostbyname, gethostname
+
+if platform.system() == "Linux":
+    from socket import IP_MTU_DISCOVER, IP_PMTUDISC_DO
+
+VERSION = "0.1.1"
 TOOL_DESCRIPTION = "tinysipping is small tool that sends SIP OPTIONS " \
                    "requests to remote host and reads responses. "
 
@@ -32,6 +38,7 @@ DFL_SIP_TRANSPORT = "udp"
 RTT_INFINITE = 99999999.0
 DFL_SEND_PAUSE = 0.5
 DFL_PAYLOAD_SIZE = 600   # bytes
+FAIL_EXIT_CODE = 1
 
 # totally 65536 bytes - max theoretical size of UDP dgram
 PADDING_PATTERN = "the_quick_brown_fox_jumps_over_the_lazy_dog_" * 1489
@@ -43,18 +50,16 @@ MSG_RESP_FROM = "SEQ #{} ({} bytes sent) {}: Response from {} ({} bytes, " \
                 "{:.03f} sec RTT): {}"
 
 
-class AbstractWorker():
+class AbstractWorker:
     def __init__(self, params):
         self._params = params
         self._sock = None
         self._create_sock()   # overload this in children
         self._configure_socket()
 
+    @abstractmethod
     def _create_sock(self):
-        """
-        'virtual' method. must be overloaded in child classes
-        """
-        raise NotImplemented("Please, don't instantiate abstract class")
+        pass
 
     def _configure_socket(self):
         self._sock.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
@@ -67,14 +72,20 @@ class AbstractWorker():
             else ""
         self._sock.bind((bind_addr, self._params["bind_port"]))
 
+        # we have DF bit set by default, that's why double negation
+        if not self._params["dont_set_df_bit"]:
+            if platform.system() == "Linux":
+                self._sock.setsockopt(SOL_IP, IP_MTU_DISCOVER, IP_PMTUDISC_DO)
+            else:
+                # for possible future work
+                pass
+
     def close(self):
         self._sock.close()
 
+    @abstractmethod
     def send(self, req):
-        """
-        'virtual' method. must be overloaded in child classes
-        """
-        raise NotImplemented("Please, don't instantiate abstract class")
+        pass
 
     def __del__(self):
         self.close()
@@ -82,7 +93,7 @@ class AbstractWorker():
 
 class TCPWorker(AbstractWorker):
     def _create_sock(self):
-        self._sock = socket.socket(AF_INET, SOCK_DGRAM)
+        self._sock = socket.socket(AF_INET, SOCK_STREAM)
 
     def send(self, req):
         """
@@ -225,7 +236,18 @@ def _get_params_from_cliargs(args):
         "bad_resp_is_fail": args.bad_resp_is_fail,
         "pause_between_transmits": args.pause_between_transmits,
         "payload_size": args.payload_size,
+        "dont_set_df_bit": args.dont_set_df_bit,
     }
+
+    try:
+        params["fail_count"] = args.fail_count
+    except AttributeError:
+        pass
+
+    try:
+        params["fail_perc"] = args.fail_perc
+    except AttributeError:
+        pass
 
     if ":" in args.destination:
         params["dst_host"], dst_port = args.destination.split(":")
@@ -256,6 +278,8 @@ def _prepare_argv_parser():
         formatter_class=lambda prog: argparse.HelpFormatter(prog, width=120)
     )
 
+    exit_nonzero_opts = ap.add_mutually_exclusive_group(required=False)
+
     ap.add_argument(
         "destination",
         help="Destination host <dst>[:port] (default port {})".format(
@@ -273,29 +297,37 @@ def _prepare_argv_parser():
     )
 
     ap.add_argument(
-        "-p",
-        dest="proto",
-        help="Protocol (udp, tcp or tls)",
-        type=str,
-        choices=("tcp", "udp", "tls"),
-        default=DFL_SIP_TRANSPORT
-    )
-
-    ap.add_argument(
-        "-t",
-        dest="sock_timeout",
-        help="Socket timeout in seconds (float, default {:.01f})".format(
-            DFL_PING_TIMEOUT),
-        type=float,
-        action="store",
-        default=DFL_PING_TIMEOUT
-    )
-
-    ap.add_argument(
         "-f",
         dest="bad_resp_is_fail",
-        help="Treat 4xx, 5xx, 6xx responses as failed request",
+        help="Treat 4xx, 5xx, 6xx responses as failure (default no)",
         action="store_true"
+    )
+
+    ap.add_argument(
+        "-i",
+        dest="src_sock",
+        help="Source iface [ip/hostname]:[port] (hostname part is optional, "
+             "possible to type \":PORT\" form to just set srcport)",
+        type=str,
+        action="store"
+    )
+
+    exit_nonzero_opts.add_argument(
+        "-k",
+        dest="fail_perc",
+        help="Program exits with non-zero code if percentage of failed "
+             "requests more than threshold",
+        type=float,
+        action="store",
+    )
+
+    exit_nonzero_opts.add_argument(
+        "-K",
+        dest="fail_count",
+        help="Program exits with non-zero code if count of failed "
+             "requests more than threshold",
+        type=int,
+        action="store",
     )
 
     ap.add_argument(
@@ -308,12 +340,30 @@ def _prepare_argv_parser():
     )
 
     ap.add_argument(
-        "-i",
-        dest="src_sock",
-        help="Source iface [ip/hostname]:[port] (hostname part is optional, "
-             "possible to type \":PORT\" form to just set srcport)",
+        "-m",
+        dest="dont_set_df_bit",
+        help="Do not set DF bit (default DF bit is set) "
+             "- currently works only on Linux",
+        action="store_true",
+    )
+
+    ap.add_argument(
+        "-p",
+        dest="proto",
+        help="Protocol (udp, tcp)",
         type=str,
-        action="store"
+        choices=("tcp", "udp"),
+        default=DFL_SIP_TRANSPORT
+    )
+
+    ap.add_argument(
+        "-t",
+        dest="sock_timeout",
+        help="Socket timeout in seconds (float, default {:.01f})".format(
+            DFL_PING_TIMEOUT),
+        type=float,
+        action="store",
+        default=DFL_PING_TIMEOUT
     )
 
     ap.add_argument(
@@ -331,6 +381,7 @@ def _prepare_argv_parser():
         action="store",
         default=DFL_PAYLOAD_SIZE
     )
+
     ap.add_argument("-V", action="version", version=VERSION)
     return ap
 
@@ -435,11 +486,18 @@ def calculate_stats(results):
     avg_rtt = -1.0 if not answered_requests \
         else float(total_rtt_sum) / float(answered_requests)
 
+    answered_perc = float(answered_requests) * 100.0 / float(total_requests)
+    failed_perc = float(failed_requests) * 100.0 / float(total_requests)
+    passed_perc = 100.0 - failed_perc
+
     return {
         "total": total_requests,
         "successful": successful_requests,
         "failed": failed_requests,
+        "failed_perc": failed_perc,
+        "passed_perc": passed_perc,
         "answered": answered_requests,
+        "answered_perc": answered_perc,
         "min_rtt": -1.0 if min_rtt == RTT_INFINITE else min_rtt,
         "max_rtt": max_rtt,
         "avg_rtt": avg_rtt,
@@ -458,21 +516,12 @@ def pretty_print_stats(stats):
 
     total_requests = stats["total"]
 
-    answered_perc = 0.0 if not stats["answered"] \
-        else (float(stats["answered"]) / float(total_requests))*100.0
-
-    passed_perc = 0.0 if not stats["successful"] \
-        else (float(stats["successful"]) / float(total_requests))*100.0
-
-    failed_perc = 0.0 if not stats["failed"] \
-        else (float(stats["failed"]) / float(total_requests))*100.0
-
     print("\n")
     print("------ FINISH -------")
     print("{:15s} {:5d}".format("Total requests:", total_requests))
-    print(perc_fmt_str.format("Answered:", stats["answered"], answered_perc))
-    print(perc_fmt_str.format("Successful:", stats["successful"], passed_perc))
-    print(perc_fmt_str.format("Failed:", stats["failed"], failed_perc))
+    print(perc_fmt_str.format("Answered:", stats["answered"], stats["answered_perc"]))
+    print(perc_fmt_str.format("Successful:", stats["successful"], stats["passed_perc"]))
+    print(perc_fmt_str.format("Failed:", stats["failed"], stats["failed_perc"]))
 
     print("\n")
 
@@ -516,8 +565,9 @@ def send_sequential_req_with_print(worker, seq_num, params):
         proto=params["proto"],
         request_size=params["payload_size"]
     )
+    bad_resp_is_fail = params["bad_resp_is_fail"]
 
-    result = send_one_request(worker, request, params)
+    result = send_one_request(worker, request, bad_resp_is_fail)
     _msg_resp = MSG_RESP_FROM.format(
         seq_num,
         len(request),
@@ -544,9 +594,6 @@ def get_worker(params):
         return TCPWorker(params)
     elif params["proto"] == "udp":
         return UDPWorker(params)
-    elif params["proto"] == "tls":
-        raise NotImplemented("Still not implemented")
-        #  return TLSWorker(params)
 
 
 def main():
@@ -554,6 +601,12 @@ def main():
     void main( void )
     """
     params = _get_params_from_cliargs(_prepare_argv_parser().parse_args())
+
+    if params["dont_set_df_bit"] and platform.system() != "Linux":
+        print("Warning - ignoring dont_set_df_bit (-m) option that is not "
+              "supported by this platform")
+
+    print("DEBUG::: ", params)
     results = []
     worker = get_worker(params)
 
@@ -593,8 +646,17 @@ def main():
             seq, "" if seq == 1 else "s")
         )
 
-    pretty_print_stats(calculate_stats(results))
-    exit(0)
+    stats = calculate_stats(results)
+    pretty_print_stats(stats)
+
+    f_c_triggered = "fail_count" in params.keys() \
+                    and stats["failed"] > params["fail_count"]
+
+    f_p_triggered = "fail_perc" in params.keys() \
+                    and stats["failed_perc"] > params["fail_perc"]
+
+    exit_code = FAIL_EXIT_CODE if f_p_triggered or f_c_triggered else 0
+    exit(exit_code)
 
 
 if __name__ == "__main__":
