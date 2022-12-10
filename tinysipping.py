@@ -44,10 +44,9 @@ FAIL_EXIT_CODE = 1
 PADDING_PATTERN = "the_quick_brown_fox_jumps_over_the_lazy_dog_" * 1489
 
 # messages templates for further formatting
-MSG_SENDING_REQS = "Sending {} SIP OPTIONS request{} (size {}) {}to " \
-                   "{}:{} with timeout {:.03f}s..."
-MSG_RESP_FROM = "SEQ #{} ({} bytes sent) {}: Response from {} ({} bytes, " \
-                "{:.03f} sec RTT): {}"
+MSG_SENDING_REQS = "Sending {} SIP OPTIONS request{} (size {}) {}to {}:{} with timeout {:.03f}s..."
+MSG_RESP_FROM = "SEQ #{} ({} bytes sent) {}: Response from {} ({} bytes, {:.03f} sec RTT): {}"
+MSG_DF_BIT_NOT_SUPPORTED = "Warning - ignoring dont_set_df_bit (-m) option that is not supported by this platform"
 
 
 class AbstractWorker:
@@ -65,8 +64,8 @@ class AbstractWorker:
         self._sock.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
         self._sock.setsockopt(SOL_SOCKET, SO_REUSEPORT, 1)
         self._sock.settimeout(self._params["timeout"])
-        # better use ipaddress lib for this check, but, sadly, it's not always
-        # available out-of-box on centos7
+
+        # better use ipaddress lib for this check, but, sadly, it's not always available out-of-box on centos7
         bind_addr = self._params["bind_addr"] \
             if not self._params["bind_addr"].startswith("127.") \
             else ""
@@ -446,7 +445,7 @@ def calculate_stats(results):
     min_rtt = RTT_INFINITE
     max_rtt = 0.0
     total_rtt_sum = 0.0
-    successful_requests = 0
+    passed_requests = 0
     failed_requests = 0
     answered_requests = 0
     response_codes = {}
@@ -455,7 +454,7 @@ def calculate_stats(results):
 
     for i in results:
         if i["is_successful"]:
-            successful_requests += 1
+            passed_requests += 1
         else:
             failed_requests += 1
 
@@ -483,8 +482,7 @@ def calculate_stats(results):
     except KeyError:
         pass
 
-    avg_rtt = -1.0 if not answered_requests \
-        else float(total_rtt_sum) / float(answered_requests)
+    avg_rtt = -1.0 if not answered_requests else float(total_rtt_sum) / float(answered_requests)
 
     answered_perc = float(answered_requests) * 100.0 / float(total_requests)
     failed_perc = float(failed_requests) * 100.0 / float(total_requests)
@@ -492,7 +490,7 @@ def calculate_stats(results):
 
     return {
         "total": total_requests,
-        "successful": successful_requests,
+        "passed": passed_requests,
         "failed": failed_requests,
         "failed_perc": failed_perc,
         "passed_perc": passed_perc,
@@ -511,7 +509,7 @@ def pretty_print_stats(stats):
     Just prints statistics in pretty form
     :param stats: (dict) statistics
     """
-    perc_fmt_str = "{:15s} {:5d}/{:0.3f}%"
+    perc_fmt = "{:15s} {:5d} / {:0.3f}%"
     float_value_str = "{:15s} {:9.3f}"
 
     total_requests = stats["total"]
@@ -519,9 +517,9 @@ def pretty_print_stats(stats):
     print("\n")
     print("------ FINISH -------")
     print("{:15s} {:5d}".format("Total requests:", total_requests))
-    print(perc_fmt_str.format("Answered:", stats["answered"], stats["answered_perc"]))
-    print(perc_fmt_str.format("Successful:", stats["successful"], stats["passed_perc"]))
-    print(perc_fmt_str.format("Failed:", stats["failed"], stats["failed_perc"]))
+    print(perc_fmt.format("Answered:", stats["answered"], stats["answered_perc"]))
+    print(perc_fmt.format("Passed:", stats["passed"], stats["passed_perc"]))
+    print(perc_fmt.format("Failed:", stats["failed"], stats["failed_perc"]))
 
     print("\n")
 
@@ -536,18 +534,14 @@ def pretty_print_stats(stats):
         print("Socket errors causes stats:")
         for k, v in stats["socket_error_causes"].items():
             cause_percentage = 100.0 * (float(v) / float(total_requests))
-            print("{:15s} {:5s}/{:0.3f}%".format(
-                str(k),
-                str(v),
-                cause_percentage)
-            )
+            print("{:15s} {:5s}/{:0.3f}%".format(str(k), str(v), cause_percentage))
         print("\n")
 
     if stats["response_codes"]:
         print("Response codes stats:")
         for k, v in stats["response_codes"].items():
             resp_code_percentage = 100.0 * (float(v) / float(total_requests))
-            print(perc_fmt_str.format(str(k), v,  resp_code_percentage))
+            print(perc_fmt.format(str(k), v,  resp_code_percentage))
 
 
 def send_sequential_req_with_print(worker, seq_num, params):
@@ -579,12 +573,8 @@ def send_sequential_req_with_print(worker, seq_num, params):
     )
     print(_msg_resp)
     _debug_print(params["verbose_mode"], "Full request:", request)
-    _debug_print(
-        params["verbose_mode"],
-        "Full response:",
-        result["full_response"]
-    )
-    _debug_print(params["verbose_mode"],"{}\n".format("-" * len(_msg_resp)))
+    _debug_print(params["verbose_mode"], "Full response:", result["full_response"])
+    _debug_print(params["verbose_mode"], "{}\n".format("-" * len(_msg_resp)))
     return result
 
 
@@ -603,10 +593,8 @@ def main():
     params = _get_params_from_cliargs(_prepare_argv_parser().parse_args())
 
     if params["dont_set_df_bit"] and platform.system() != "Linux":
-        print("Warning - ignoring dont_set_df_bit (-m) option that is not "
-              "supported by this platform")
+        print(MSG_DF_BIT_NOT_SUPPORTED)
 
-    print("DEBUG::: ", params)
     results = []
     worker = get_worker(params)
 
@@ -614,6 +602,7 @@ def main():
     # <src_interface>:<port> was specified
     _from_substr = "" if not params["bind_addr"] and not params["bind_port"] \
         else "from {}:{} ".format(params["bind_addr"], params["bind_port"])
+
     sending_req_msg = MSG_SENDING_REQS.format(
         "infinitely" if not params["count"] else params["count"],
         "" if params["count"] == 1 else "s",
@@ -623,6 +612,7 @@ def main():
         params["dst_port"],
         params["timeout"]
     )
+
     print(sending_req_msg)
     print("{}\n".format("-" * len(sending_req_msg)))
 
@@ -642,20 +632,15 @@ def main():
                 if params["pause_between_transmits"]:
                     time.sleep(params["pause_between_transmits"])
     except KeyboardInterrupt:
-        print("\nInterrupted after {} request{}".format(
-            seq, "" if seq == 1 else "s")
-        )
+        print("\nInterrupted after {} request{}".format(seq, "" if seq == 1 else "s"))
 
     stats = calculate_stats(results)
     pretty_print_stats(stats)
 
-    f_c_triggered = "fail_count" in params.keys() \
-                    and stats["failed"] > params["fail_count"]
+    fail_count_triggered = "fail_count" in params.keys() and stats["failed"] > params["fail_count"]
+    fail_perc_triggered = "fail_perc" in params.keys() and stats["failed_perc"] > params["fail_perc"]
+    exit_code = FAIL_EXIT_CODE if fail_count_triggered or fail_perc_triggered else 0
 
-    f_p_triggered = "fail_perc" in params.keys() \
-                    and stats["failed_perc"] > params["fail_perc"]
-
-    exit_code = FAIL_EXIT_CODE if f_p_triggered or f_c_triggered else 0
     exit(exit_code)
 
 
