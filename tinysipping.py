@@ -19,8 +19,7 @@ import platform
 from abc import abstractmethod
 
 from socket import SOL_SOCKET, SOL_IP, SO_REUSEADDR, SO_REUSEPORT, \
-    IPPROTO_IP, SOCK_DGRAM, SOCK_STREAM, AF_INET, \
-    gethostbyname, gethostname
+    SOCK_DGRAM, SOCK_STREAM, AF_INET, gethostbyname, gethostname
 
 
 VERSION = "0.1.1"
@@ -55,7 +54,7 @@ PADDING_PATTERN = "the_quick_brown_fox_jumps_over_the_lazy_dog_" * 1489
 # messages templates for further formatting
 MSG_SENDING_REQS = "Sending {} SIP OPTIONS request{} (size {}) {}to {}:{} with timeout {:.03f}s..."
 MSG_RESP_FROM = "SEQ #{} ({} bytes sent) {}: Response from {} ({} bytes, {:.03f} sec RTT): {}"
-MSG_DF_BIT_NOT_SUPPORTED = "Warning - ignoring dont_set_df_bit (-m) option that is not supported by this platform"
+MSG_DF_BIT_NOT_SUPPORTED = "WARNING: ignoring dont_set_df_bit (-m) option that is not supported by this platform"
 
 
 class AbstractWorker:
@@ -91,8 +90,6 @@ class AbstractWorker:
         else:
             if platform.system() == "Linux":
                 self._sock.setsockopt(SOL_IP, IP_MTU_DISCOVER, IP_PMTUDISC_DO)
-            elif platform.system() == "Darwin":
-                self._sock.setsockopt(SOL_IP, IPPROTO_IP, IP_DONTFRAG)
             else:
                 # for possible future work
                 pass
