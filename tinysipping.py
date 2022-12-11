@@ -38,9 +38,6 @@ DFL_PAYLOAD_SIZE = 600   # bytes
 FAIL_EXIT_CODE = 1
 
 # Unfortunately, Python2.7 has no these definitions in socket module
-# MacOS X-specific definitions, taken from Apple in.h file
-IP_DONTFRAG = 28
-
 # Linux-specific definitions, taken from Linux in.h file
 IP_MTU_DISCOVER = 10
 IP_PMTUDISC_DONT = 0   # Never send DF frames
