@@ -22,8 +22,6 @@ from socket import SOL_SOCKET, SOL_IP, SO_REUSEADDR, SO_REUSEPORT, \
     IPPROTO_IP, SOCK_DGRAM, SOCK_STREAM, AF_INET, \
     gethostbyname, gethostname
 
-if platform.system() == "Linux":
-    from socket import IP_MTU_DISCOVER, IP_PMTUDISC_DO
 
 VERSION = "0.1.1"
 TOOL_DESCRIPTION = "tinysipping is small tool that sends SIP OPTIONS " \
@@ -40,7 +38,18 @@ DFL_SEND_PAUSE = 0.5
 DFL_PAYLOAD_SIZE = 600   # bytes
 FAIL_EXIT_CODE = 1
 
-# totally 65536 bytes - max theoretical size of UDP dgram
+# Unfortunately, Python2.7 has no these definitions in socket module
+# MacOS X-specific definitions, taken from Apple in.h file
+IP_DONTFRAG = 28
+
+# Linux-specific definitions, taken from Linux in.h file
+IP_MTU_DISCOVER = 10
+IP_PMTUDISC_DONT = 0   # Never send DF frames
+IP_PMTUDISC_WANT = 1   # Use per route hints
+IP_PMTUDISC_DO = 2   # Always DF
+IP_PMTUDISC_PROBE = 3   # Ignore dst pmtu
+
+# length of this phrase * 1489 = totally 65536 bytes -- it's max theoretical size of UDP dgram
 PADDING_PATTERN = "the_quick_brown_fox_jumps_over_the_lazy_dog_" * 1489
 
 # messages templates for further formatting
@@ -71,13 +80,24 @@ class AbstractWorker:
             else ""
         self._sock.bind((bind_addr, self._params["bind_port"]))
 
-        # we have DF bit set by default, that's why double negation
-        if not self._params["dont_set_df_bit"]:
+        # Sending packets with DF bit set is default application behavior
+
+        # small platform-specific notices
+        # df bit oftenly set on linux systems because pmtu discovery oftenly enabled by default
+        # but better not to rely on it and explicitly set and unset this
+        if self._params["dont_set_df_bit"]:
+            if platform.system() == "Linux":
+                self._sock.setsockopt(SOL_IP, IP_MTU_DISCOVER, IP_PMTUDISC_DONT)
+        else:
             if platform.system() == "Linux":
                 self._sock.setsockopt(SOL_IP, IP_MTU_DISCOVER, IP_PMTUDISC_DO)
+            elif platform.system() == "Darwin":
+                self._sock.setsockopt(SOL_IP, IPPROTO_IP, IP_DONTFRAG)
             else:
                 # for possible future work
                 pass
+
+
 
     def close(self):
         self._sock.close()
@@ -281,8 +301,7 @@ def _prepare_argv_parser():
 
     ap.add_argument(
         "destination",
-        help="Destination host <dst>[:port] (default port {})".format(
-            DFL_SIP_PORT),
+        help="Destination host <dst>[:port] (default port {})".format(DFL_SIP_PORT),
         type=str,
         action="store",
     )
@@ -305,8 +324,8 @@ def _prepare_argv_parser():
     ap.add_argument(
         "-i",
         dest="src_sock",
-        help="Source iface [ip/hostname]:[port] (hostname part is optional, "
-             "possible to type \":PORT\" form to just set srcport)",
+        help="Source iface [ip/hostname]:[port] (hostname part is optional, possible to type \":PORT\" form "
+             "to just set srcport)",
         type=str,
         action="store"
     )
@@ -314,8 +333,7 @@ def _prepare_argv_parser():
     exit_nonzero_opts.add_argument(
         "-k",
         dest="fail_perc",
-        help="Program exits with non-zero code if percentage of failed "
-             "requests more than threshold",
+        help="Program exits with non-zero code if percentage of failed requests more than threshold",
         type=float,
         action="store",
     )
@@ -323,8 +341,7 @@ def _prepare_argv_parser():
     exit_nonzero_opts.add_argument(
         "-K",
         dest="fail_count",
-        help="Program exits with non-zero code if count of failed "
-             "requests more than threshold",
+        help="Program exits with non-zero code if count of failed requests more than threshold",
         type=int,
         action="store",
     )
@@ -358,8 +375,7 @@ def _prepare_argv_parser():
     ap.add_argument(
         "-t",
         dest="sock_timeout",
-        help="Socket timeout in seconds (float, default {:.01f})".format(
-            DFL_PING_TIMEOUT),
+        help="Socket timeout in seconds (float, default {:.01f})".format(DFL_PING_TIMEOUT),
         type=float,
         action="store",
         default=DFL_PING_TIMEOUT
