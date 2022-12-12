@@ -22,7 +22,7 @@ from socket import SOL_SOCKET, SOL_IP, SO_REUSEADDR, SO_REUSEPORT, \
     SOCK_DGRAM, SOCK_STREAM, AF_INET, gethostbyname, gethostname
 
 
-VERSION = "0.1.1"
+VERSION = "0.1.2"
 TOOL_DESCRIPTION = "tinysipping is small tool that sends SIP OPTIONS " \
                    "requests to remote host and reads responses. "
 
@@ -211,7 +211,10 @@ def create_sip_req(dst_host, dst_port=DFL_SIP_PORT, bind_port=0,
         "\r\n"  # for getting double \r\n at the end, as it need by RFC
     ])
 
+    # original hdr_wo_padding has length with {} symbols accounted, so when we substitute padding,
+    # we lose two these symbols and get actual length 2 bytes less than expected
     padding_size = request_size - len(hdr_wo_padding) + 2
+
     padding = gen_padding(padding_size) if padding_size > 0 else ""
     request = hdr_wo_padding.format(padding)
     return request
