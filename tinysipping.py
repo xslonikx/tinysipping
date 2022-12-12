@@ -191,6 +191,7 @@ def create_sip_req(dst_host, dst_port=DFL_SIP_PORT, bind_port=0,
     # these intervals are chosen to keep request size always constant
     cseq = random.randint(1000000000, 2147483647)
     tag_id = random.randint(1000000000, 2147483647)
+    from_domainpart = "{}:{}".format(my_hostname, bind_port) if bind_port else my_hostname
 
     # HeaDeR WithOut
     hdr_wo_padding = "\r\n".join([
@@ -200,9 +201,7 @@ def create_sip_req(dst_host, dst_port=DFL_SIP_PORT, bind_port=0,
         ),
         "Max-Forwards: {}".format(MAX_FORWARDS),
         "To: <sip:options@{}:{}>".format(dst_host, dst_port),
-        "From: <sip:options@{}:{}>;tag={}".format(
-            my_hostname, bind_port, tag_id
-        ),
+        "From: <sip:options@{}>;tag={}".format(from_domainpart, tag_id),
         "Call-ID: {}".format(call_id),
         "CSeq: {} OPTIONS".format(cseq),
         "Contact: <sip:tinysipping@{}>".format(my_hostname),
