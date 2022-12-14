@@ -15,7 +15,6 @@ import argparse
 import time
 import re
 import platform
-import json
 
 from abc import abstractmethod
 
