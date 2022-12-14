@@ -20,8 +20,10 @@ optional arguments:
                         Pause between transmits (default 0.5, 0 for immediate send)
   -m                    Do not set DF bit (default DF bit is set) - currently works only on Linux
   -p {tcp,udp}          Protocol (udp, tcp)
+  -Rf FIELD_FROM        SIP From: URI
+  -Rt FIELD_TO          SIP To: and R-URI
+  -s PAYLOAD_SIZE       Fill request up to certain size
   -t SOCK_TIMEOUT       Socket timeout in seconds (float, default 1.0)
   -v                    Verbose mode (show sent and received content)
-  -s PAYLOAD_SIZE       Fill request upto certain size
   -V                    show program's version number and exit
 ```
