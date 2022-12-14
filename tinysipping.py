@@ -15,12 +15,12 @@ import argparse
 import time
 import re
 import platform
+import json
 
 from abc import abstractmethod
 
 from socket import SOL_SOCKET, SOL_IP, SO_REUSEADDR, SO_REUSEPORT, \
     SOCK_DGRAM, SOCK_STREAM, AF_INET, gethostbyname, gethostname
-
 
 VERSION = "0.1.2"
 TOOL_DESCRIPTION = "tinysipping is small tool that sends SIP OPTIONS " \
@@ -34,16 +34,18 @@ DFL_REQS_COUNT = 0
 DFL_SIP_TRANSPORT = "udp"
 RTT_INFINITE = 99999999.0
 DFL_SEND_PAUSE = 0.5
-DFL_PAYLOAD_SIZE = 600   # bytes
+DFL_PAYLOAD_SIZE = 600  # bytes
+DFL_FROM_USER = "tinysipping"
+DFL_TO_USER = "options"
 FAIL_EXIT_CODE = 1
 
 # Unfortunately, Python2.7 has no these definitions in socket module
 # Linux-specific definitions, taken from Linux in.h file
 IP_MTU_DISCOVER = 10
-IP_PMTUDISC_DONT = 0   # Never send DF frames
-IP_PMTUDISC_WANT = 1   # Use per route hints
-IP_PMTUDISC_DO = 2   # Always DF
-IP_PMTUDISC_PROBE = 3   # Ignore dst pmtu
+IP_PMTUDISC_DONT = 0  # Never send DF frames
+IP_PMTUDISC_WANT = 1  # Use per route hints
+IP_PMTUDISC_DO = 2  # Always DF
+IP_PMTUDISC_PROBE = 3  # Ignore dst pmtu
 
 # length of this phrase * 1489 = totally 65536 bytes -- it's max theoretical size of UDP dgram
 PADDING_PATTERN = "the_quick_brown_fox_jumps_over_the_lazy_dog_" * 1489
@@ -53,12 +55,19 @@ MSG_SENDING_REQS = "Sending {} SIP OPTIONS request{} (size {}) {}to {}:{} with t
 MSG_RESP_FROM = "SEQ #{} ({} bytes sent) {}: Response from {} ({} bytes, {:.03f} sec RTT): {}"
 MSG_DF_BIT_NOT_SUPPORTED = "WARNING: ignoring dont_set_df_bit (-m) option that is not supported by this platform"
 
+SPLIT_URI_REGEX = re.compile(
+    "(?:(?P<user>[\w\.]+):?(?P<password>[\w\.]+)?@)?"
+    "\[?(?P<host>(?:\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})|"
+    "(?:(?:[0-9a-fA-F]{1,4}):){7}[0-9a-fA-F]{1,4}|"
+    "(?:(?:[0-9A-Za-z]+\.)+[0-9A-Za-z]+))\]?:?(?P<port>\d{1,6})?"
+)
+
 
 class AbstractWorker:
     def __init__(self, params):
         self._params = params
         self._sock = None
-        self._create_sock()   # overload this in children
+        self._create_sock()  # overload this in children
         self._configure_socket()
 
     @abstractmethod
@@ -79,7 +88,7 @@ class AbstractWorker:
         # Sending packets with DF bit set is default application behavior
 
         # small platform-specific notices
-        # df bit oftenly set on linux systems because pmtu discovery oftenly enabled by default
+        # df bit often set on linux systems because pmtu discovery often enabled by default
         # but better not to rely on it and explicitly set and unset this
         if self._params["dont_set_df_bit"]:
             if platform.system() == "Linux":
@@ -90,8 +99,6 @@ class AbstractWorker:
             else:
                 # for possible future work
                 pass
-
-
 
     def close(self):
         self._sock.close()
@@ -168,20 +175,19 @@ def gen_padding(size=DFL_PAYLOAD_SIZE):
     return PADDING_PATTERN[:size]
 
 
-def create_sip_req(dst_host, dst_port=DFL_SIP_PORT, bind_port=0,
-                   proto=DFL_SIP_TRANSPORT, request_size=DFL_PAYLOAD_SIZE):
+def create_sip_req(params):
     """
     Generates serialized SIP header from source data
-    :param bind_port: (int) source port. Used in From: header
-    :param dst_port: (int) destination port. Used in URI and To: header
-    :param dst_host: (str) ip address or hostname of remote side.
-    :param proto: (str) tcp or udp, otherwise ValueError will raise
-    :param request_size: (int) size that request should be padded to.
+    :params (dict): dict with parameters of request
     :returns: (string): SIP header in human-readable format. Don"t forget to
                         encode it to bytes
     """
-    my_hostname = gethostname()
-    call_id = "{0}-{1}".format(my_hostname, str(uuid.uuid4()))
+    # sender_contact will be used in Via: and Contact: headers
+    # sc_host = sender contact's host part
+    sc_host = params["bind_addr"] if params["bind_addr"] else gethostname()
+    sender_contact = "{}:{}".format(sc_host, params["bind_port"]) if params["bind_port"] else sc_host
+
+    call_id = "{0}-{1}".format(gethostname(), str(uuid.uuid4()))
 
     # According to RFC3261, the branch ID MUST always begin with the characters
     # "z9hG4bK". It used as magic cookie. Beyond this requirement, the precise
@@ -191,29 +197,26 @@ def create_sip_req(dst_host, dst_port=DFL_SIP_PORT, bind_port=0,
     # these intervals are chosen to keep request size always constant
     cseq = random.randint(1000000000, 2147483647)
     tag_id = random.randint(1000000000, 2147483647)
-    from_domainpart = "{}:{}".format(my_hostname, bind_port) if bind_port else my_hostname
 
-    # HeaDeR WithOut
+    # HeaDeR WithOut padding
     hdr_wo_padding = "\r\n".join([
-        "OPTIONS sip:options@{}:{} SIP/2.0".format(dst_host, dst_port),
-        "Via: SIP/2.0/{} {};branch={};rport".format(
-            proto.upper(), my_hostname, branch_id
-        ),
+        "OPTIONS sip:{}@{} SIP/2.0".format(params["to_user"], params["to_domain"]),
+        "Via: SIP/2.0/{} {};branch={};rport".format(params["proto"].upper(), sender_contact, branch_id),
         "Max-Forwards: {}".format(MAX_FORWARDS),
-        "To: <sip:options@{}:{}>".format(dst_host, dst_port),
-        "From: <sip:options@{}>;tag={}".format(from_domainpart, tag_id),
+        "To: <sip:{}@{}>".format(params["to_user"], params["to_domain"]),
+        "From: <sip:{}@{}>;tag={}".format(params["from_user"], params["from_domain"], tag_id),
         "Call-ID: {}".format(call_id),
         "CSeq: {} OPTIONS".format(cseq),
-        "Contact: <sip:tinysipping@{}>".format(my_hostname),
+        "Contact: <sip:{}@{}>;transport={}".format(params["from_user"], sender_contact, params["proto"].lower()),
         "Accept: application/sdp",
         "Content-Length: 0",
-        "P-tinysipping-padding: {}",   # this field will be filled later
+        "P-tinysipping-padding: {}",  # this field will be filled later
         "\r\n"  # for getting double \r\n at the end, as it need by RFC
     ])
 
     # original hdr_wo_padding has length with {} symbols accounted, so when we substitute padding,
     # we lose two these symbols and get actual length 2 bytes less than expected
-    padding_size = request_size - len(hdr_wo_padding) + 2
+    padding_size = params["payload_size"] - len(hdr_wo_padding) + 2
 
     padding = gen_padding(padding_size) if padding_size > 0 else ""
     request = hdr_wo_padding.format(padding)
@@ -234,7 +237,7 @@ def _get_params_from_cliargs(args):
         "timeout": (float) Socket timeout
         "proto": Protocol (tcp or udp). Assertion for proto in (tcp, udp)
         "verbose_mode": (bool) Verbose mode
-        ""ad_resp_is_fail": (bool) Treat 4xx, 5xx, 6xx responses as fail
+        "bad_resp_is_fail": (bool) Treat 4xx, 5xx, 6xx responses as fail
     }
     :param args: (argparse.Namespace) argparse CLI arguments
     :return: (dict) dictionary with params
@@ -252,7 +255,21 @@ def _get_params_from_cliargs(args):
         "pause_between_transmits": args.pause_between_transmits,
         "payload_size": args.payload_size,
         "dont_set_df_bit": args.dont_set_df_bit,
+        "from_user": DFL_FROM_USER,
+        "to_user": DFL_TO_USER,
+        "from_domain": None,
+        "to_domain": None,
     }
+
+    try:
+        params["fail_count"] = args.fail_count
+    except AttributeError:
+        pass
+
+    try:
+        params["fail_perc"] = args.fail_perc
+    except AttributeError:
+        pass
 
     try:
         params["fail_count"] = args.fail_count
@@ -276,6 +293,44 @@ def _get_params_from_cliargs(args):
             params["bind_port"] = int(bind_port)
         else:
             params["bind_addr"] = args.src_sock
+
+    # hc means hosts contact
+    # is to be used as domain part if we have no exact From: domain
+    hc = params["bind_addr"] if params["bind_addr"] else gethostname()
+
+    if args.field_from:
+        uri_components = SPLIT_URI_REGEX.search(args.field_from)
+        if uri_components:
+            fu, _, fd, fp = uri_components.groups()  # ignoring password part
+            if fu:
+                params["from_user"] = fu
+
+            # this block allows input string in "xxx@" format with empty user part
+            # in this case domain part will be empty after pattern matching.
+            # We take it from hostname or source interface address
+            # so, you're able to have constant user part and variable domain part
+            if not fd:
+                fd = hc
+            params["from_domain"] = "{}:{}".format(fd, fp) if fp else fd
+    else:
+        params["from_domain"] = "{}:{}".format(hc, params["bind_port"]) if params["bind_port"] else hc
+
+    if args.field_to:
+        uri_components = SPLIT_URI_REGEX.search(args.field_to)
+        if uri_components:
+            tu, _, td, tp = uri_components.groups()  # ignoring password part
+            if tu:
+                params["to_user"] = tu
+
+            # As similar block above, this one allows input To: URI value in "xxx@" format with empty domain part
+            if not td:
+                td = params["dst_host"]
+
+            params["to_domain"] = "{}:{}".format(td, tp) if tp else td
+    elif params["dst_port"]:
+        params["to_domain"] = "{}:{}".format(params["dst_host"], params["dst_port"])
+    else:
+        params["to_domain"] = params["dst_host"]
 
     assert (params["proto"] in ("tcp", "udp"))  # tcp and udp support only
     assert (params["dst_host"])  # dst_host is mandatory parameter
@@ -369,6 +424,31 @@ def _prepare_argv_parser():
     )
 
     ap.add_argument(
+        "-Rf",
+        dest="field_from",
+        help="SIP From: URI",
+        type=str,
+        action="store",
+    )
+
+    ap.add_argument(
+        "-Rt",
+        dest="field_to",
+        help="SIP To: and R-URI",
+        type=str,
+        action="store",
+    )
+
+    ap.add_argument(
+        "-s",
+        dest="payload_size",
+        help="Fill request up to certain size",
+        type=int,
+        action="store",
+        default=DFL_PAYLOAD_SIZE
+    )
+
+    ap.add_argument(
         "-t",
         dest="sock_timeout",
         help="Socket timeout in seconds (float, default {:.01f})".format(DFL_PING_TIMEOUT),
@@ -382,15 +462,6 @@ def _prepare_argv_parser():
         dest="verbose_mode",
         help="Verbose mode (show sent and received content)",
         action="store_true"
-    )
-
-    ap.add_argument(
-        "-s",
-        dest="payload_size",
-        help="Fill request upto certain size",
-        type=int,
-        action="store",
-        default=DFL_PAYLOAD_SIZE
     )
 
     ap.add_argument("-V", action="version", version=VERSION)
@@ -422,10 +493,10 @@ def send_one_request(worker, request, bad_resp_is_fail=True):
     result = {
         "is_successful": True,
         "length": 0,
-        "error": None,   # exception for further handling
-        "rtt": -1.0,   # round trip time
-        "brief_response": "",   # just heading string like SIP/2.0 200 OK
-        "resp_code": 0,   # response code
+        "error": None,  # exception for further handling
+        "rtt": -1.0,  # round trip time
+        "brief_response": "",  # just heading string like SIP/2.0 200 OK
+        "resp_code": 0,  # response code
         "full_response": "",
     }
 
@@ -477,7 +548,7 @@ def calculate_stats(results):
 
         try:
             response_codes[int(i["resp_code"])] += 1
-        except KeyError:    # it means there"s no such response code before
+        except KeyError:  # it means there"s no such response code before
             response_codes[int(i["resp_code"])] = 1
 
         if i["error"]:
@@ -490,7 +561,7 @@ def calculate_stats(results):
             answered_requests += 1
 
     try:
-        del response_codes[0]   # 0 is a stub response code
+        del response_codes[0]  # 0 is a stub response code
     except KeyError:
         pass
 
@@ -553,7 +624,7 @@ def pretty_print_stats(stats):
         print("Response codes stats:")
         for k, v in stats["response_codes"].items():
             resp_code_percentage = 100.0 * (float(v) / float(total_requests))
-            print(perc_fmt.format(str(k), v,  resp_code_percentage))
+            print(perc_fmt.format(str(k), v, resp_code_percentage))
 
 
 def send_sequential_req_with_print(worker, seq_num, params):
@@ -564,13 +635,7 @@ def send_sequential_req_with_print(worker, seq_num, params):
     :param params: (dict) parameters
     :return: (dict) results
     """
-    request = create_sip_req(
-        dst_host=params["dst_host"],
-        dst_port=params["dst_port"],
-        bind_port=params["bind_port"],
-        proto=params["proto"],
-        request_size=params["payload_size"]
-    )
+    request = create_sip_req(params)
     bad_resp_is_fail = params["bad_resp_is_fail"]
 
     result = send_one_request(worker, request, bad_resp_is_fail)
@@ -630,7 +695,7 @@ def main():
 
     seq = 0
     try:
-        if not params["count"]:   # 0 means infinite ping
+        if not params["count"]:  # 0 means infinite ping
             while True:
                 result = send_sequential_req_with_print(worker, seq, params)
                 results.append(result)
